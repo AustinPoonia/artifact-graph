@@ -212,9 +212,9 @@ it('the three spellings of a binding are three different numbers of edges', () =
 it('a manifest with one kind and an instance that named none is the ordinary case', () => {
   const one = { kinds: [{ key: 'only', ports: [], provides: [] }] }
   assert.ok(kindOf(one, ''), 'a single kind was not matched by an instance naming none')
-  assert.equal(kindOf(one, 'wrong'), null, 'a named kind that does not exist matched anyway')
-  assert.equal(kindOf({ kinds: [] }, ''), null)
-  assert.equal(kindOf(null, ''), null)
+  assert.strictEqual(kindOf(one, 'wrong'), null, 'a named kind that does not exist matched anyway')
+  assert.strictEqual(kindOf({ kinds: [] }, ''), null)
+  assert.strictEqual(kindOf(null, ''), null)
 })
 
 async function main () {
