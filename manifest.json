@@ -1,0 +1,73 @@
+{
+  "name": "graph",
+  "version": "1.0.0",
+  "entry": "/index.js",
+  "deps": [
+    {
+      "name": "cli",
+      "range": "^2.0.0"
+    },
+    {
+      "name": "kit",
+      "range": "^1.14.0"
+    }
+  ],
+  "contracts": [],
+  "kinds": [
+    {
+      "key": "graph",
+      "version": "1.0.0",
+      "provides": [
+        {
+          "id": "cli",
+          "version": "2.0.0"
+        },
+        {
+          "id": "view",
+          "version": "1.1.0"
+        }
+      ],
+      "ports": [
+        {
+          "name": "kit",
+          "contract": "kit",
+          "range": "^1.9.0",
+          "cardinality": "one",
+          "description": "Every element on the page, the canvas included. This artifact writes no markup of its own beyond layout containers, and its suite asserts that by scanning for classes the kit does not build.\n\n^1.9.0 because the canvas is the kit's `graph` component, which is a member of a **closed enum** added in the kit contract's 1.9.0. A lower range would resolve to a baseline whose enum does not contain it, and asking for a component the contract does not name is refused at the call rather than drawn badly.\n\nA port's range is a version of the contract; `deps` above carries a version of the artifact — 1.9.0 and 1.14.0, for the same kit. Writing the second here is a port no provider can satisfy, and `ArtifactPatform/test/surface.test.js` sweeps the whole tree for it because a repository's own suite cannot: a suite binds a fake, and a fake has no version."
+        },
+        {
+          "name": "listen",
+          "contract": "platform:listen",
+          "range": "^1.0.0",
+          "cardinality": "one",
+          "description": "Where the canvas is reachable, and the same socket the document is handed in on. Bound rather than assumed, because opening a socket is authority and this artifact has none of its own: the capability binds 127.0.0.1 and hands requests over as data.\n\nNothing here is served to anybody but the operator who started it. The graph is a map of a network's wiring, which is exactly the map an attacker would like."
+        },
+        {
+          "name": "store",
+          "contract": "platform:store",
+          "range": "^1.0.0",
+          "cardinality": "optional",
+          "description": "Where a dragged node's position is kept, keyed by network. Optional, and the arrangement is **advisory** in both directions: a node with no saved place still gets an automatic one, and a saved place for a node that has since gone is dropped rather than drawn. A stale arrangement must never hide an instance that has appeared — the graph is the truth and the layout is a preference.\n\nAn instance with none of this lays out fresh on every visit, and the page says so rather than losing a drag silently."
+        },
+        {
+          "name": "documents",
+          "contract": "platform:documents",
+          "range": "^1.0.0",
+          "cardinality": "optional",
+          "description": "Somewhere to write a file: the address this instance is serving on. Optional — an instance with nowhere to write still serves, it just cannot say where, and the operator who bound it that way chose that."
+        }
+      ],
+      "config": {
+        "type": "object",
+        "description": "What this instance calls itself. There is deliberately nothing here about what may be changed: that is a property of the **document** this instance is handed, not of an admin's signed opinion about this instance, because a graph handed over read-only must stay read-only whatever the config says.",
+        "fields": {
+          "title": {
+            "type": "string",
+            "optional": true,
+            "description": "What this instance calls itself, in the window and at the top of the rail. Defaults to \"Graph\"."
+          }
+        }
+      }
+    }
+  ]
+}
