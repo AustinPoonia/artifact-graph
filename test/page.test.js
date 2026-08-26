@@ -269,14 +269,23 @@ it('the rail opens on a node, closes on a list, and closes on Escape', async () 
   const seen = run(HTML, { hash: '#/node/studio', extra: DRAWN, answer: { id: 'studio' } })
   await settle()
 
-  const rail = seen.at('[data-aside]')
-  assert.equal(rail.getAttribute('data-open'), 'true', 'opening a node did not open the rail')
+  // The checkbox is the state, the same as the left rail's — so `checked` is
+  // collapsed and a selection un-checks it.
+  assert.strictEqual(seen.at('#k-aside-toggle').checked, false, 'opening a node did not open the rail')
+  assert.equal(seen.at('.k-sidebar-right [data-sidebar-name]').textContent, 'studio',
+    'the rail does not name what it is about')
+
+  // And it named *that* rail. Both rails are the same component, so both carry
+  // the hook — and the unscoped query took the first one, which is the left: the
+  // application's own name and network were overwritten with whichever node had
+  // last been opened, on every selection.
+  assert.strictEqual(seen.at('[data-sidebar-name]').textContent, '',
+    'writing the right rail\'s brand reached into the left one')
 
   // Switching to a list closes it: there is no selected node on a table.
-  seen.at('#instance-list')
   const list = run(HTML, { hash: '#/instances', extra: DRAWN })
   await settle()
-  assert.equal(list.at('[data-aside]').getAttribute('data-open'), 'false',
+  assert.strictEqual(list.at('#k-aside-toggle').checked, true,
     'the rail stayed open on a screen with nothing selected')
 
   // And the canvas is only flush on the canvas.
@@ -415,7 +424,7 @@ it('a spline follows the node it is attached to', async () => {
   node.setAttribute('data-node', 'studio')
 
   const edges = seen.at('[data-edge]')
-  edges.setAttribute('data-edge', 'studio links links-qr')
+  edges.setAttribute('data-edge', 'studio links links-qr shortlink')
   edges.setAttribute('d', 'M0 0C0 0 0 0 500 300')
 
   seen.fire('document:pointerdown', { target: node, clientX: 0, clientY: 0, pointerId: 1 })
@@ -424,6 +433,41 @@ it('a spline follows the node it is attached to', async () => {
   const d = edges.getAttribute('d')
   assert.ok(d.startsWith('M400 '), `the spline did not follow its node: ${d}`)
   assert.ok(d.includes('C'), 'the spline stopped being a curve')
+})
+
+it('dragging a provider takes its edges with it, from the right socket', async () => {
+  // The other end of the same problem. A dragged *consumer* moves the start of a
+  // spline and a dragged *provider* moves its end — and which end, on a node
+  // that answers to two contracts, is decided by the contract. That is why the
+  // contract rides on the edge: the page has no graph to look it up in.
+  const seen = run(HTML, { extra: [...DRAWN, '[data-out]', '[data-out="links-go shortlink"]'] })
+  await settle()
+
+  const node = seen.at('[data-node="studio"]')
+  node.setAttribute('data-node', 'links-go')
+  node.style.width = '220px'
+  node.style.height = '160px'
+
+  // The socket the contract lands on, 100px down the node.
+  const socket = seen.at('[data-out="links-go shortlink"]')
+  socket.style.top = '100px'
+
+  const edge = seen.at('[data-edge]')
+  edge.setAttribute('data-edge', 'studio links links-go shortlink')
+  edge.setAttribute('d', 'M600 40C560 40 40 80 0 80')
+
+  seen.fire('document:pointerdown', { target: node, clientX: 0, clientY: 0, pointerId: 1 })
+  seen.fire('document:pointermove', { target: node, clientX: 300, clientY: 200, pointerId: 1 })
+
+  const d = edge.getAttribute('d')
+  const ends = /([0-9.]+) ([0-9.]+)$/.exec(d)
+  if (ends === null) throw new Error(`the spline is not a curve any more: ${d}`)
+
+  // Right edge of the node at its new place, and the socket's own row — not the
+  // middle of the node, which is where this used to put every edge.
+  assert.equal(Number(ends[1]), 300 + 220, `the spline ends at ${ends[1]}, not the node's right edge`)
+  assert.equal(Number(ends[2]), 200 + 100, `the spline ends at ${ends[2]}, not on the socket`)
+  assert.notEqual(Number(ends[2]), 200 + 80, 'the spline went back to the middle of the node')
 })
 
 async function main () {

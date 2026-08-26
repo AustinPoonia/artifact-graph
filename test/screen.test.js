@@ -219,10 +219,23 @@ it('the canvas is the panel, and the node it opens is the other rail', () => {
   assert.strictEqual(canvas[0].includes('id="node-panel"'), false,
     'the node panel is still inside the canvas view, so it still takes the canvas\'s width')
 
-  // The rail is outside the inset entirely, after it.
-  assert.ok(HTML.includes('<aside class="k-aside"'), 'there is no right rail')
+  // The rail is outside the inset entirely, after it — and it is the *same*
+  // component as the left one, with its own collapse rather than a bespoke one.
+  assert.ok(HTML.includes('<aside class="k-sidebar k-sidebar-right"'), 'there is no right rail')
   assert.ok(HTML.indexOf('id="node-panel"') > HTML.indexOf('</main>'), 'the node panel is not in the rail')
-  assert.ok(HTML.includes('data-open="false"'), 'the rail is open before anything is selected')
+  assert.ok(/id="k-aside-toggle" checked/.test(HTML), 'the rail is open before anything is selected')
+  assert.ok(HTML.includes('for="k-aside-toggle"'), 'the rail has no control to open and close it')
+
+  // Two rails, two brands, two handles: whatever the left one has, this has.
+  //
+  // Counted over the markup with the stylesheet taken out first. The sheet names
+  // every class it styles, so counting `k-sidebar-brand-mark` across the whole
+  // document returns three for two rails — a number that looks like a finding
+  // and is a rule.
+  const markup = HTML.replace(/<style[\s\S]*?<\/style>/g, '')
+  assert.equal((markup.match(/k-sidebar-brand-mark/g) || []).length, 2, 'the rails are not built the same way')
+  assert.equal((markup.match(/class="k-shell-handle"/g) || []).length, 2, 'only one rail can be collapsed')
+  assert.equal((markup.match(/class="k-sidebar[ "]/g) || []).length, 2, 'the two rails are not two sidebars')
 
   // And the body is flush, so the canvas is not a card in a 90rem column.
   assert.ok(HTML.includes('k-inset k-inset-flush'), 'the canvas view does not take the panel')
