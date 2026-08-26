@@ -109,16 +109,24 @@ it('the mode is stated before anybody tries to change something', async () => {
   // The mode is a property of the document this instance was handed. Saying so
   // where a reader will see it is the difference between "this is read only"
   // and a button that quietly does nothing.
+  // A word, in the header, always visible. The banner it replaced sat above the
+  // canvas, was read once, and cost a fifth of the panel to go on saying
+  // something nobody could act on; the sentence that *is* actionable is beside
+  // the ports it constrains, on a node's page — `test/routes.test.js`.
   const reading = await page({ mode: 'read' })
   assert.ok(reading.includes('Read only'), 'a read-only instance does not say so')
 
   const planning = await page({ mode: 'plan' })
-  assert.ok(planning.includes('run elsewhere'), 'a planning instance claims more or less than it has')
-  assert.ok(planning.includes('takes it out of the network permanently'),
-    'a planning instance does not say what rewiring costs')
+  assert.ok(planning.includes('Plan only'), 'a planning instance claims more or less than it has')
   assert.strictEqual(planning.includes('Read only'), false)
 
-  // There is no third state. An `apply` document is read like any other word
+  // Whichever it is, it is in the header rather than in the body — so it does
+  // not scroll away and does not take room from the canvas.
+  const header = /<header class="k-inset-header">[\s\S]*?<\/header>/.exec(planning)
+  if (header === null) throw new Error('the inset has no header')
+  assert.ok(header[0].includes('Plan only'), 'the mode is not in the header')
+
+  // There is no third state. An apply document is read like any other word
   // nothing recognises, which is to say read-only — see `lib/routes.js`.
   const applying = await page({ mode: 'apply' })
   assert.ok(applying.includes('Read only'), 'a mode nothing produces got a screen of its own')
@@ -200,14 +208,24 @@ it('no two functions in the page script share a name', () => {
   }
 })
 
-it('the canvas and the node it opens are on screen together', () => {
-  // Opening a node must not take away the picture that shows why you opened it,
-  // which is the whole reason a node is a panel beside the canvas rather than a
-  // screen of its own.
-  const canvas = must(/<div class="k-stack k-gap-6" data-view="canvas"[\s\S]*?data-view="instances"/.exec(HTML),
+it('the canvas is the panel, and the node it opens is the other rail', () => {
+  // Opening a node must not take away the picture that shows why you opened it.
+  // It is a rail on the right rather than a column inside the canvas view, so
+  // the canvas is the whole panel when nothing is selected and most of it when
+  // something is.
+  const canvas = must(/<div class="k-stack k-gap-0 k-fill" data-view="canvas"[\s\S]*?data-view="instances"/.exec(HTML),
     'the canvas view is not on the page')
   assert.ok(canvas[0].includes('id="canvas"'), 'the canvas panel holds no canvas')
-  assert.ok(canvas[0].includes('id="node-panel"'), 'the canvas panel has nowhere to put a node')
+  assert.strictEqual(canvas[0].includes('id="node-panel"'), false,
+    'the node panel is still inside the canvas view, so it still takes the canvas\'s width')
+
+  // The rail is outside the inset entirely, after it.
+  assert.ok(HTML.includes('<aside class="k-aside"'), 'there is no right rail')
+  assert.ok(HTML.indexOf('id="node-panel"') > HTML.indexOf('</main>'), 'the node panel is not in the rail')
+  assert.ok(HTML.includes('data-open="false"'), 'the rail is open before anything is selected')
+
+  // And the body is flush, so the canvas is not a card in a 90rem column.
+  assert.ok(HTML.includes('k-inset k-inset-flush'), 'the canvas view does not take the panel')
 })
 
 async function main () {

@@ -33,7 +33,10 @@ const it = (n, f) => cases.push([n, f])
  */
 function fakeDocument (html, extra = []) {
   const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]))
-  const data = new Set([...html.matchAll(/(data-[a-z-]+)=/g)].map((m) => m[1]))
+  // Both spellings. A valueless attribute — `data-aside`, `data-graph` — is a
+  // real selector and matched nothing here, because the pattern required an `=`.
+  // Every case that depended on one passed by not running.
+  const data = new Set([...html.matchAll(/\s(data-[a-z-]+)(?=[=\s>])/g)].map((m) => m[1]))
   for (const one of extra) {
     const named = /\[(data-[a-z-]+)/.exec(one)
     if (named) data.add(named[1])
@@ -63,7 +66,17 @@ function fakeDocument (html, extra = []) {
       // Everything the camera reads back off an element it moved.
       style: { left: '0px', top: '0px', width: '220px', height: '100px', transform: '' },
       attrs: /** @type {Record<string, string>} */ ({}),
-      classList: { toggle: () => {}, add: () => {}, remove: () => {} },
+      // Recorded rather than swallowed: a layout this page switches by class is a
+      // layout no case could check against a fake that forgets.
+      classes: /** @type {string[]} */ ([]),
+      classList: {
+        toggle (/** @type {string} */ c, /** @type {boolean} */ on) {
+          const at = el.classes.indexOf(c)
+          if (on === false || (on === undefined && at >= 0)) { if (at >= 0) el.classes.splice(at, 1) } else if (at < 0) el.classes.push(c)
+        },
+        add (/** @type {string} */ c) { if (!el.classes.includes(c)) el.classes.push(c) },
+        remove (/** @type {string} */ c) { const at = el.classes.indexOf(c); if (at >= 0) el.classes.splice(at, 1) }
+      },
       addEventListener (/** @type {string} */ event, /** @type {Function} */ fn) {
         seen.calls.push(what + ':' + event)
         handlers.set(what + ':' + event, fn)
@@ -246,6 +259,29 @@ it('a node address focuses the canvas rather than replacing it', async () => {
 
   const node = must(seen.fetches.find((f) => f.path === '/node'), 'opening a node did not open the node')
   assert.equal(node.sent.id, 'studio')
+})
+
+it('the rail opens on a node, closes on a list, and closes on Escape', async () => {
+  // The rail is the other half of "the canvas is the panel": it is about what is
+  // selected, so it has no width until something is — and it has to give the
+  // width back, or the canvas stays 26rem short of the panel for the rest of the
+  // session.
+  const seen = run(HTML, { hash: '#/node/studio', extra: DRAWN, answer: { id: 'studio' } })
+  await settle()
+
+  const rail = seen.at('[data-aside]')
+  assert.equal(rail.getAttribute('data-open'), 'true', 'opening a node did not open the rail')
+
+  // Switching to a list closes it: there is no selected node on a table.
+  seen.at('#instance-list')
+  const list = run(HTML, { hash: '#/instances', extra: DRAWN })
+  await settle()
+  assert.equal(list.at('[data-aside]').getAttribute('data-open'), 'false',
+    'the rail stayed open on a screen with nothing selected')
+
+  // And the canvas is only flush on the canvas.
+  assert.strictEqual(list.at('.k-inset').classes.includes('k-inset-flush'), false,
+    'a list of rows was given the canvas layout')
 })
 
 it('a filter is sent with every drawing, and a filter nobody set is empty', async () => {

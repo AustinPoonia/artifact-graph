@@ -289,8 +289,30 @@ it('a node page names its ports, what each reaches, and what fills a platform po
   // whole distinction: one is filled and the other is a decision somebody made.
   assert.ok(out.body.html.includes('>nothing<'), 'an unbound optional was not named')
 
+  // Three columns in a 26rem rail, so every cell has to be short enough to
+  // survive one: `.k-table td` is `white-space:nowrap`, and what it drops first
+  // is the rightmost column — which is the one somebody opened the node to read.
+  assert.strictEqual(out.body.html.includes('^1.1.0'), false,
+    'the port table still carries a version range, which is the width `reaches` needs')
+
   const missing = await post(a, '/node', { document: document(), id: 'nowhere' })
   assert.ok(missing.body.html.includes('No such instance'))
+})
+
+it('a planning graph says what repointing costs, on the page where it would be done', async () => {
+  // This was a banner above the canvas: always on screen, read once, and about
+  // nothing in particular. It says something a person acts on, so it belongs
+  // beside the ports they are looking at when they think about acting.
+  const planning = app()
+  const out = await post(planning, '/node', { document: document({ mode: 'plan' }), id: 'studio' })
+  assert.ok(out.body.html.includes('never be reusable'), 'a planning node page does not say what a change costs')
+  assert.ok(out.body.html.includes('studio'), 'the warning does not name the instance it is about')
+
+  // And a read-only graph does not carry it, because there is nothing to plan.
+  const reading = app()
+  const quiet = await post(reading, '/node', { document: document({ mode: 'read' }), id: 'studio' })
+  assert.strictEqual(quiet.body.html.includes('never be reusable'), false,
+    'a read-only graph warned about a change it will not work out')
 })
 
 it('a port with a dozen targets is named and counted, not cut off mid-word', async () => {
