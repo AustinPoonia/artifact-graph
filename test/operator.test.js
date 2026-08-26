@@ -16,6 +16,7 @@
 const t = require('bare-tap')
 const assert = require('bare-assert')
 const fs = require('bare-fs')
+const path = require('bare-path')
 
 const kit = require('artifact-kit').build({}, {})
 const { manifest: manifestOf } = require('artifact-protocol')
@@ -42,11 +43,23 @@ function must (value, why) {
   return value
 }
 
+/**
+ * The directory the sibling repositories sit in.
+ *
+ * `path.join`, not a regular expression against the path. This read
+ * `__dirname.replace(/\/artifact-graph\/test$/, '')`, which is a pattern only a
+ * POSIX path can match: on Windows `__dirname` is separated by backslashes, so
+ * the replace did nothing, the walk below listed this repository's own `test`
+ * directory, and the first entry it tried to open was `package.json` —
+ * `ENOTDIR`. Three suites here were green on a Mac and dead on Windows.
+ */
+const BESIDE = path.join(__dirname, '..', '..')
+
 /** Every manifest beside this repository, parsed. */
 function manifests () {
   /** @type {Record<string, any>} */
   const all = {}
-  const here = __dirname.replace(/\/artifact-graph\/test$/, '')
+  const here = BESIDE
   for (const dir of fs.readdirSync(here)) {
     try {
       const m = manifestOf.parse(JSON.parse(fs.readFileSync(`${here}/${dir}/manifest.json`).toString()))
