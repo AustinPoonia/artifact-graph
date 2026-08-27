@@ -655,7 +655,10 @@ it('the drawer and the toolbar are not the canvas', async () => {
   seen.fire('document:pointerup', { target: seen.at('[data-graph-viewport]'), clientX: 300, clientY: 260 })
   await settle()
 
-  const placed = seen.fetches.filter((f) => f.path === '/draft' && f.sent.do === 'place')
+  // `block`, not `place`: what the drawer hands you is one artifact *and
+  // everything it needs*, which is the whole reason somebody drags from a drawer
+  // rather than wiring six prerequisites by hand.
+  const placed = seen.fetches.filter((f) => f.path === '/draft' && f.sent.do === 'block')
   assert.equal(placed.length, 1, `the drop asked to place ${placed.length} times`)
   assert.equal(placed[0].sent.artifact, 'shortlink')
   assert.equal(placed[0].sent.kind, 'shortlink')

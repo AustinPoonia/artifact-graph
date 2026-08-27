@@ -83,6 +83,50 @@ never be used on this network again, and every instance bound to the one going
 away stops planning until it is rebound — which is itself a removal and a fresh
 id, for each of them. Saying that afterwards is a post-mortem.
 
+## Blocks
+
+Placing a studio and then wiring its encoder, its kit and whatever else it needs
+is six decisions to express one. **A block is one artifact and everything it
+needs, placed at once** — and it is what the drawer hands you, so there is no
+second gesture to learn.
+
+It is not a new kind of artifact. Nothing on this platform composes instances
+into a signed unit, and inventing one here would be this drawing claiming a
+concept the network does not have. A block is a *recipe*: several drafts wired to
+each other, and what comes out is still one `instance create` per part.
+
+Nor is it a catalogue. There is no list of "the QR studio block" anywhere in this
+repository, because a drawing tool that knew the name of a particular artifact
+would be the one piece of this platform that knew about another. A block is
+**derived** — a port wants a contract, and the manifests say who answers to it.
+
+### Which ports it fills, and which it hands back
+
+The rule is about **decisions, not convenience**. A port is filled inside the
+block only when there is nothing to decide:
+
+| | |
+| --- | --- |
+| `one` port, exactly one candidate | **Filled.** Asking would be asking somebody to confirm arithmetic. |
+| `many` port | **Handed back.** "How many, and which" is the question the port exists to ask. |
+| `optional` port | **Handed back.** The author said an instance may decline it, so declining is a decision. |
+| `one` port, several candidates | **Handed back.** A block that picked would be picking silently, which is how a graph gets wired to whichever manifest sorted first. |
+| `one` port, no candidate | **Handed back.** Nothing here can satisfy it, and hiding that makes a block that looks complete and will not plan. |
+| `platform:` port | Neither. The runtime fills it and nobody binds one. |
+
+A contract already answered by exactly one instance **on the graph** is bound to
+that instance rather than to a fresh copy — a block that placed its own private
+shortlink beside the one already running would read as tidy and double the estate
+every time it was used. So the same block is several nodes on an empty network
+and one node on a full one, which is the honest answer in both cases.
+
+### One node, until you open it
+
+A shut block draws as a single node carrying only the ports it handed back, with
+a `+` on it. Wiring one of those ports wires the instance *inside* it, and the
+command that comes out says so. A port the block filled cannot be reached from
+outside — open the block and wire the part directly, or leave it alone.
+
 ## The layout, and where a node sits
 
 `lib/layout.js` is pure and deterministic — ranked by longest path so a node sits

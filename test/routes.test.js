@@ -392,6 +392,125 @@ it('a dragged position is kept, and a device with no store says so', async () =>
   assert.equal(bad.status, 400)
 })
 
+it('a block fills what has one answer and hands back what has a decision', async () => {
+  const { needs } = require('../lib/model')
+
+  // Nothing here names an artifact. The recipe is *derived*: a port wants a
+  // contract and the manifests say who answers to it, which is the only way a
+  // drawing tool can offer this without knowing what a QR studio is.
+  const worked = needs({ manifests: SET, artifact: 'studio', kind: 'studio', present: [] })
+
+  const made = worked.parts.map((/** @type {any} */ p) => p.artifact)
+  assert.ok(made.includes('studio'), 'the block does not contain the thing it is a block of')
+  assert.ok(made.length > 1, 'the block filled nothing, so it saved nobody anything')
+
+  // Filled: a `one` port with exactly one candidate. Asking would be asking
+  // somebody to confirm arithmetic.
+  const kind = SET.studio.kinds[0]
+  const forced = kind.ports.filter((/** @type {any} */ p) =>
+    p.cardinality === 'one' && !String(p.contract).startsWith('platform:'))
+  for (const port of forced) {
+    assert.strictEqual(worked.expose.some((/** @type {any} */ e) => e.port === port.name), false,
+      `${port.name} has one possible answer and the block asked about it anyway`)
+  }
+
+  // Handed back: every `many` and every `optional`, because both are decisions.
+  const decided = kind.ports.filter((/** @type {any} */ p) =>
+    p.cardinality !== 'one' && !String(p.contract).startsWith('platform:'))
+  for (const port of decided) {
+    assert.ok(worked.expose.some((/** @type {any} */ e) => e.port === port.name),
+      `${port.name} is a decision and the block made it silently`)
+  }
+
+  // And a platform port is neither: the runtime fills it and nobody binds one.
+  assert.strictEqual(worked.expose.some((/** @type {any} */ e) => e.contract.startsWith('platform:')), false,
+    'the block offered a port the runtime fills')
+  assert.strictEqual(
+    worked.parts.some((/** @type {any} */ p) => Object.keys(p.bindings).some((n) => n === 'listen')), false,
+    'the block bound a platform port'
+  )
+})
+
+it('a block binds what is already running rather than copying it', async () => {
+  const { needs } = require('../lib/model')
+
+  // A block that placed its own private kit beside the one already running would
+  // read as tidy and double the estate every time somebody used it.
+  const present = [{ id: 'kit', provides: ['kit'] }, { id: 'qr', provides: ['qr-encoder'] }]
+  const worked = needs({ manifests: SET, artifact: 'studio', kind: 'studio', present })
+
+  assert.equal(worked.parts.length, 1, `it made ${worked.parts.map((/** @type {any} */ p) => p.artifact).join(', ')}`)
+  assert.equal(worked.reused.length, 2, 'nothing already running was reused')
+  assert.ok(worked.reused.some((/** @type {any} */ r) => r.id === 'kit'))
+
+  // Two candidates is not one candidate: the block must not pick, because
+  // picking silently is how a graph gets wired to whichever manifest sorted
+  // first.
+  const two = [{ id: 'kit', provides: ['kit'] }, { id: 'kit-b', provides: ['kit'] }]
+  const split = needs({ manifests: SET, artifact: 'studio', kind: 'studio', present: two })
+  const asked = split.expose.find((/** @type {any} */ e) => e.port === 'kit')
+  if (asked === undefined) throw new Error('two candidates and the block still chose one')
+  assert.ok(asked.candidates.includes('kit') && asked.candidates.includes('kit-b'), asked.candidates.join(', '))
+})
+
+it('a block is one node until somebody opens it, and it can be wired as one', async () => {
+  const a = app()
+  // A graph holding only a shortlink, so the block has prerequisites left to
+  // fill: against the full fixture it correctly reuses the kit and the encoder
+  // already running and comes to exactly one part, which is the *other* case.
+  const doc = document({
+    mode: 'plan',
+    instances: WIRING.filter((/** @type {any} */ i) => i.id === 'links-qr'),
+    problems: []
+  })
+  await post(a, '/canvas', { document: doc })
+
+  const put = await post(a, '/draft', { document: doc, do: 'block', artifact: 'studio', kind: 'studio' })
+  assert.equal(put.body.ok, true, put.body.why)
+  assert.ok(put.body.parts > 1, `the block is ${put.body.parts} part`)
+  assert.ok(put.body.commands.length === put.body.parts,
+    `${put.body.parts} instances and ${put.body.commands.length} commands`)
+
+  // Shut, it is one node. The parts are real instances and are drawn as such the
+  // moment anybody opens it -- but a block that showed its own wiring by default
+  // is a block that saved nobody anything.
+  const shut = await post(a, '/canvas', { document: doc })
+  const drawn = /<article[^>]*data-node="[^"]*"[\s\S]*?<\/article>/g
+  const one = String(shut.body.html).match(drawn)
+    ?.find((/** @type {string} */ a) => a.includes(`data-node="${put.body.block}"`))
+  if (one === undefined) throw new Error('the block is not on the canvas')
+  assert.ok(one.includes('k-graph-node-block'), 'a shut block is drawn as an ordinary node')
+  assert.ok(one.includes('data-graph-into'), 'a block offers no way to look inside it')
+
+  // Only the surface. A shut block showing the ports it filled for itself is a
+  // block that saved nobody anything — and this failed exactly that way once,
+  // because a block carries its main part's id and the fold skipped it.
+  const ports = [...one.matchAll(/data-port="[^ ]+ ([a-z]+)"/g)].map((m) => m[1])
+  assert.ok(ports.includes('links'), `the surface is missing links: ${ports.join(', ')}`)
+  assert.strictEqual(ports.includes('encoder'), false, `a filled port is drawn on the surface: ${ports.join(', ')}`)
+  assert.strictEqual(ports.includes('listen'), false, 'a platform port is drawn on the surface')
+
+  const opened = await post(a, '/draft', { document: doc, do: 'open', block: put.body.block })
+  assert.equal(opened.body.ok, true)
+  const open = await post(a, '/canvas', { document: doc })
+  assert.ok(open.body.nodes > shut.body.nodes,
+    `shut drew ${shut.body.nodes} and open drew ${open.body.nodes}`)
+  assert.equal(open.body.nodes - shut.body.nodes, put.body.parts - 1, 'opening did not reveal every part')
+
+  // Shut again, and wire the block itself: the reader wires one node, and what
+  // gets bound is an instance inside it.
+  await post(a, '/draft', { document: doc, do: 'shut', block: put.body.block })
+  const wired = await post(a, '/draft', { document: doc, do: 'wire', from: put.body.block, port: 'links', to: 'links-qr' })
+  assert.equal(wired.body.ok, true, wired.body.why)
+  const create = wired.body.commands.find((/** @type {string} */ c) => c.includes(`create ${put.body.block} `))
+  assert.ok(/links=\[links-qr\]/.test(create), create)
+
+  // A port the block filled for itself is not on its surface, so it cannot be
+  // wired from outside -- which is the block keeping its own promise.
+  const inside = await post(a, '/draft', { document: doc, do: 'wire', from: put.body.block, port: 'encoder', to: 'qr' })
+  assert.equal(inside.body.ok, false, 'a port the block filled was wirable from outside')
+})
+
 it('placing a node draws it, marks it unsigned, and prints the create', async () => {
   const a = app()
   const doc = document({ mode: 'plan' })
