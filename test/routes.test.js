@@ -392,6 +392,370 @@ it('a dragged position is kept, and a device with no store says so', async () =>
   assert.equal(bad.status, 400)
 })
 
+it('placing a node draws it, marks it unsigned, and prints the create', async () => {
+  const a = app()
+  const doc = document({ mode: 'plan' })
+  await post(a, '/canvas', { document: doc })
+
+  const put = await post(a, '/draft', { document: doc, do: 'place', artifact: 'shortlink', kind: 'shortlink' })
+  assert.equal(put.body.ok, true, put.body.why)
+  assert.equal(put.body.drafts.length, 1)
+  assert.equal(put.body.commands.length, 1)
+  assert.ok(put.body.commands[0].startsWith('artifact-operator instance create shortlink shortlink'), put.body.commands[0])
+
+  // Drawn, and drawn *differently*: a proposal rendered like a signed instance
+  // is a map that has stopped being one.
+  const drawn = await post(a, '/canvas', { document: doc })
+  assert.equal(drawn.body.nodes, WIRING.length + 1, 'the placed node is not on the canvas')
+  assert.ok(drawn.body.html.includes('k-graph-node-draft'), 'a placed node is drawn as though it were signed')
+
+  // An id the network already holds is one `instance create` refuses, so the
+  // drawer never hands out one.
+  const again = await post(a, '/draft', { document: doc, do: 'place', artifact: 'shortlink', kind: 'shortlink' })
+  const ids = again.body.drafts.map((/** @type {any} */ d) => d.id)
+  assert.equal(new Set([...ids, ...WIRING.map((/** @type {any} */ i) => i.id)]).size,
+    ids.length + WIRING.length, `two things share an id: ${ids.join(', ')}`)
+
+  // Undo, and clear.
+  const undone = await post(a, '/draft', { document: doc, do: 'undo' })
+  assert.equal(undone.body.drafts.length, 1)
+  const cleared = await post(a, '/draft', { document: doc, do: 'clear' })
+  assert.equal(cleared.body.drafts.length, 0)
+  assert.equal(cleared.body.commands.length, 0)
+})
+
+it('a wire is only a wire where the contract fits and nobody has signed it', async () => {
+  const a = app()
+  const doc = document({ mode: 'plan' })
+  await post(a, '/canvas', { document: doc })
+  await post(a, '/draft', { document: doc, do: 'place', artifact: 'studio', kind: 'studio' })
+  await post(a, '/draft', { document: doc, do: 'place', artifact: 'shortlink', kind: 'shortlink' })
+
+  // The wire that fits: a `many` port takes it, and the create carries it.
+  const wired = await post(a, '/draft', { document: doc, do: 'wire', from: 'studio-2', port: 'links', to: 'shortlink' })
+  assert.equal(wired.body.ok, true, wired.body.why)
+  const create = wired.body.commands.find((/** @type {string} */ c) => c.includes('create studio-2'))
+  assert.ok(/links=\[shortlink\]/.test(create), create)
+
+  // Providers first. A create naming a draft that has not been created yet is a
+  // command that fails on the line before it would have worked.
+  const at = wired.body.commands.findIndex((/** @type {string} */ c) => c.includes('create shortlink'))
+  const then = wired.body.commands.findIndex((/** @type {string} */ c) => c.includes('create studio-2'))
+  assert.ok(at < then, `the create that binds runs first: ${wired.body.commands.join(' | ')}`)
+
+  // The same wire twice is the same wire.
+  const twice = await post(a, '/draft', { document: doc, do: 'wire', from: 'studio-2', port: 'links', to: 'shortlink' })
+  const once = twice.body.commands.find((/** @type {string} */ c) => c.includes('create studio-2'))
+  assert.ok(/links=\[shortlink\]/.test(once), once)
+
+  // A dot that does not answer the contract is not a place a wire can land.
+  const wrong = await post(a, '/draft', { document: doc, do: 'wire', from: 'studio-2', port: 'encoder', to: 'shortlink' })
+  assert.equal(wrong.body.ok, false, 'any dot reached any dot')
+  assert.ok(wrong.body.why.includes('does not answer to qr-encoder'), wrong.body.why)
+
+  // A platform port is the runtime's, and there is nothing about it to wire.
+  const runtime = await post(a, '/draft', { document: doc, do: 'wire', from: 'studio-2', port: 'listen', to: 'shortlink' })
+  assert.equal(runtime.body.ok, false)
+  assert.ok(runtime.body.why.includes('runtime'), runtime.body.why)
+
+  // And the rule the tool exists to teach: a signed instance cannot be dragged
+  // into a new shape, because rewiring one is a removal and a fresh id.
+  const signed = await post(a, '/draft', { document: doc, do: 'wire', from: 'studio', port: 'links', to: 'links-qr' })
+  assert.equal(signed.body.ok, false, 'a signed instance was rewired by dragging')
+  assert.equal(signed.body.signed, true)
+  assert.ok(signed.body.why.includes('removal and a fresh instance'), signed.body.why)
+})
+
+it('a read-only canvas has no drawer and no tools', async () => {
+  const a = app()
+  await post(a, '/canvas', { document: document({ mode: 'read' }) })
+
+  const drawn = await post(a, '/canvas', { document: document({ mode: 'read' }), tool: 'place' })
+  assert.strictEqual(drawn.body.html.includes('data-graph-tool'), false,
+    'a read-only canvas offers operations it will refuse')
+  assert.strictEqual(drawn.body.html.includes('data-graph-put'), false,
+    'a read-only canvas offers a shelf of things that do nothing when picked up')
+
+  const put = await post(a, '/draft', { do: 'place', artifact: 'shortlink', kind: 'shortlink' })
+  assert.equal(put.body.ok, false, 'a read-only canvas placed a node anyway')
+})
+
+it('the drawer offers every kind, including ones nothing is running yet', async () => {
+  const a = app()
+  const doc = document({ mode: 'plan' })
+  await post(a, '/canvas', { document: doc })
+  const drawn = await post(a, '/canvas', { document: doc, tool: 'place' })
+
+  assert.ok(drawn.body.html.includes('data-graph-put'), 'there is nothing to place')
+  // Placing the *first* instance of something is the case that matters most, and
+  // a drawer built from the drawing is the one that cannot offer it.
+  const running = new Set(WIRING.map((/** @type {any} */ i) => i.artifact))
+  const idle = Object.keys(SET).find((name) => !running.has(name) && (SET[name].kinds || []).length > 0)
+  assert.ok(idle, 'every artifact in the fixture is already running, so this case checks nothing')
+  assert.ok(drawn.body.html.includes(`data-graph-put="${idle}/`),
+    `${idle} is not running and is not in the drawer`)
+})
+
+it('the mode is a ceiling the page cannot raise', async () => {
+  // The whole authority model of this application in one case. `read` and `plan`
+  // are what the producer was willing to hand over; a value set on the page is a
+  // request, and the routes answer it.
+  const reading = app()
+  await post(reading, '/canvas', { document: document({ mode: 'read' }) })
+
+  const up = await post(reading, '/mode', { want: 'plan' })
+  assert.equal(up.body.ok, false, 'a read-only graph let the page promote itself')
+  assert.equal(up.body.mode, 'read')
+  assert.ok(up.body.why.includes('--plan'), up.body.why)
+
+  // And the refusal is not cosmetic: the routes still refuse the work.
+  const change = await post(reading, '/change', { instance: 'studio', port: 'links', targets: [] })
+  assert.equal(change.body.ok, false, 'a graph that refused the mode did the work anyway')
+
+  // Edit is refused on every document this platform produces, and the reason is
+  // not "ask an administrator" — it is that there is nothing to ask for.
+  const planning = app()
+  await post(planning, '/canvas', { document: document({ mode: 'plan' }) })
+  const edit = await post(planning, '/mode', { want: 'edit' })
+  assert.equal(edit.body.ok, false, 'edit mode was granted')
+  assert.ok(edit.body.why.includes('no key'), edit.body.why)
+
+  // Lowering is always allowed, and it really lowers: a canvas set to read only
+  // will not work a change out even though the document would permit it.
+  const down = await post(planning, '/mode', { want: 'read' })
+  assert.equal(down.body.ok, true, down.body.why)
+  assert.equal(down.body.mode, 'read')
+  const quiet = await post(planning, '/change', { instance: 'studio', port: 'links', targets: [] })
+  assert.equal(quiet.body.ok, false, 'a canvas set to read only worked a change out')
+  assert.ok(quiet.body.why.includes('Switch it to Plan'), quiet.body.why)
+
+  // ...and is undone by the same menu, which the producer's refusal never is.
+  const back = await post(planning, '/mode', { want: 'plan' })
+  assert.equal(back.body.ok, true)
+  const again = await post(planning, '/change', { instance: 'studio', port: 'links', targets: ['links-qr'] })
+  assert.equal(again.body.ok, true, again.body.why)
+
+  // A word nothing recognises is read-only, not a mode with authority nobody
+  // defined.
+  const nonsense = await post(planning, '/mode', { want: 'apply' })
+  assert.equal(nonsense.status, 400, 'a mode nothing produces was accepted')
+})
+
+it('a resent document is not a new one, and a new one really is', async () => {
+  // The producer sends the document with **every request**, so "a new document
+  // arrived" cannot mean "a document arrived". It meant exactly that once: the
+  // drafts were thrown away and the positions re-read on every click, and a node
+  // placed on the canvas was gone before the next request could see it.
+  const a = app()
+  const doc = document({ mode: 'plan' })
+  await post(a, '/canvas', { document: doc })
+  await post(a, '/mode', { want: 'read' })
+
+  const same = await post(a, '/canvas', { document: doc })
+  assert.ok(same.status === 200)
+  const kept = await post(a, '/change', { instance: 'studio', port: 'links', targets: ['links-qr'] })
+  assert.equal(kept.body.ok, false, 'resending the same document threw away a choice somebody made')
+
+  // A draft survives the resends too, which is the case that made this visible.
+  await post(a, '/mode', { want: 'plan' })
+  await post(a, '/draft', { document: doc, do: 'place', artifact: 'shortlink', kind: 'shortlink' })
+  const still = await post(a, '/draft', { document: doc, do: 'undo' })
+  assert.equal(still.body.drafts.length, 0, 'undo took away something already gone')
+
+  await post(a, '/draft', { document: doc, do: 'place', artifact: 'shortlink', kind: 'shortlink' })
+  const after = await post(a, '/canvas', { document: doc })
+  assert.ok(after.body.nodes > WIRING.length, 'a placed node did not survive the next request')
+
+  // And a genuinely different document resets both: the choice is about this
+  // document, not about the session, or a canvas is quietly less than it was
+  // handed.
+  const fewer = document({ mode: 'plan', instances: WIRING.slice(0, 3), problems: [] })
+  await post(a, '/mode', { want: 'read' })
+  await post(a, '/canvas', { document: fewer })
+  const fresh = await post(a, '/change', { instance: 'studio', port: 'links', targets: ['links-qr'] })
+  assert.notEqual(fresh.body.why, 'This canvas is set to read only. Switch it to Plan to work a change out.',
+    'a new document kept the old choice')
+})
+
+it('a node lists every setting its kind declares, not only the ones somebody set', async () => {
+  const a = app()
+  const out = await post(a, '/node', { document: document(), id: 'links-go' })
+
+  // The fixture wires this instance with no config at all, which is exactly the
+  // case the old panel drew as nothing: a kind with three settings nobody has
+  // decided looked identical to a kind with no settings.
+  const wired = WIRING.find((/** @type {any} */ i) => i.id === 'links-go')
+  if (wired === undefined) throw new Error('the fixture has no links-go')
+  assert.equal(Object.keys(wired.config || {}).length, 0, 'the fixture sets config, so this case is not measuring anything')
+
+  const declared = SET.shortlink.kinds[0].config.fields
+  const names = Object.keys(declared)
+  assert.ok(names.length >= 2, `the shortlink kind declares ${names.length} settings, so this case checks little`)
+
+  for (const name of names) {
+    assert.ok(out.body.html.includes(`<td>${name}</td>`), `${name} is declared and is not on the panel`)
+  }
+  assert.ok(out.body.html.includes('not set'), 'a setting nobody decided does not say so')
+
+  // And what each one is for, where a cell cannot wrap.
+  const tips = [...out.body.html.matchAll(/data-tip="([^"]*)"/g)].map((m) => m[1])
+  assert.ok(tips.some((t) => t.startsWith(names[0])), `no row says what ${names[0]} is: ${JSON.stringify(tips)}`)
+})
+
+it('a setting the kind does not declare is drawn, and marked', async () => {
+  // The other direction, and the more interesting one: the planner refuses a
+  // network carrying a setting nothing reads, so leaving it out of the picture
+  // would hide the cause of a fault the same picture reports.
+  const a = app()
+  const bent = WIRING.map((/** @type {any} */ i) =>
+    (i.id === 'links-go' ? { ...i, config: { ...i.config, nonsense: 'yes' } } : i))
+  const out = await post(a, '/node', { document: document({ instances: bent, problems: [] }), id: 'links-go' })
+
+  assert.ok(out.body.html.includes('nothing reads this'), 'an undeclared setting is drawn as though it were fine')
+  assert.ok(out.body.html.includes('not declared'), 'nothing says the kind does not declare it')
+  assert.ok(out.body.html.includes('yes'), 'the value nobody reads is not shown')
+})
+
+it('a folded node carries no settings, because two instances are two decisions', async () => {
+  const a = app()
+  const out = await post(a, '/canvas', { document: document(), fold: 'on' })
+  assert.ok(out.body.nodes > 0)
+
+  const { model, collapse } = require('../lib/model')
+  const graph = model({ instances: WIRING, manifests: SET, problems: [] })
+  const folded = collapse(graph, ['shortlink'])
+  const one = folded.nodes.find((/** @type {any} */ n) => n.id === 'artifact:shortlink')
+  if (one === undefined) throw new Error('nothing folded')
+  assert.equal(one.settings.length, 0, 'a folded node shows one instance\'s settings as though they were both\'s')
+})
+
+it('a socket says what it is, in the manifest\'s own words', async () => {
+  // The prose is handed over separately and that is not an arrangement anybody
+  // chose: `manifest.parse` produces the canonical signing shape, which carries
+  // no descriptions and no `contracts` at all. A drawing that wants to say what
+  // a socket does cannot read it off the manifests it was given.
+  const parsed = SET.studio
+  assert.ok(parsed, 'the studio manifest is not in the fixture set')
+  assert.strictEqual(
+    (parsed.kinds[0].ports[0] || {}).description !== undefined, false,
+    'a parsed manifest carries descriptions after all, and the whole prose channel can go'
+  )
+
+  const a = app()
+  const doc = {
+    ...document(),
+    prose: {
+      studio: {
+        ports: { 'studio links': 'Where the short links live.\n\nA second paragraph nobody asked for.' },
+        contracts: { view: 'What a window draws.' }
+      }
+    }
+  }
+  await post(a, '/canvas', { document: doc })
+  const drawn = await post(a, '/canvas', { document: doc })
+
+  assert.ok(drawn.body.html.includes('Where the short links live.'), 'the port says nothing about itself')
+  assert.strictEqual(drawn.body.html.includes('A second paragraph'), false,
+    'the whole description went into the tooltip, not the opening of it')
+
+  // An output says what its contract is for, and the contract is almost never
+  // declared by the artifact answering to it: the studio provides `view` and its
+  // manifest declares no such contract, so a lookup in its own file finds
+  // nothing every time. This is the assertion that fails if that lookup goes
+  // back to being a local one.
+  const owner = Object.keys(SET).find((name) =>
+    (SET[name].contracts || []).some((/** @type {any} */ c) => c.id === 'cli'))
+  assert.ok(owner, 'nothing in the fixture set declares the cli contract')
+  assert.notEqual(owner, 'studio', 'the studio declares cli itself, so this case is not measuring the search')
+  const said = SET[/** @type {string} */ (owner)].contracts
+    .find((/** @type {any} */ c) => c.id === 'cli').shape.description
+  const first = String(said).split('\n\n')[0].replace(/\*\*|__|`/g, '').replace(/\s+/g, ' ').trim()
+  const sentence = first.length > 240 ? first.slice(0, first.search(/\.\s/) + 1) : first
+  // Unescaped before comparing: these descriptions carry apostrophes, and the
+  // page quite correctly writes them as entities.
+  const plain = String(drawn.body.html).replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&')
+  assert.ok(plain.includes(sentence.slice(0, 40)),
+    `an output does not carry what its contract is for: looked for ${JSON.stringify(sentence.slice(0, 40))}`)
+
+  // And a producer that sends none draws sockets with no tooltip rather than no
+  // sockets, because the prose is the newest field on the document and an older
+  // producer is a real thing.
+  const quiet = await post(a, '/canvas', { document: document() })
+  assert.ok(quiet.body.html.includes('data-port='), 'a document with no prose drew no ports')
+  assert.strictEqual(quiet.body.html.includes('title=""'), false, 'a socket carries an empty tooltip')
+})
+
+it('adding an instance is a command, and an id the network has is refused here', async () => {
+  const a = app()
+  await post(a, '/canvas', { document: document({ mode: 'plan' }) })
+
+  const out = await post(a, '/instance', { do: 'add', id: 'links-3', artifact: 'shortlink', kind: 'shortlink' })
+  assert.equal(out.body.ok, true, out.body.why)
+  assert.equal(out.body.commands.length, 1)
+  assert.ok(out.body.commands[0].startsWith('artifact-operator instance create links-3 shortlink '),
+    out.body.commands[0])
+
+  // The refusal the operator would give, given here instead — because a page
+  // that prints a command the operator refuses has taught the reader nothing
+  // except to paste it and find out.
+  const taken = await post(a, '/instance', { do: 'add', id: 'links-qr', artifact: 'shortlink', kind: 'shortlink' })
+  assert.equal(taken.body.ok, false)
+  assert.ok(taken.body.why.includes('already on this network'), taken.body.why)
+
+  const nonsense = await post(a, '/instance', { do: 'add', id: 'x', artifact: 'shortlink', kind: 'not-a-kind' })
+  assert.equal(nonsense.body.ok, false)
+  assert.ok(nonsense.body.why.includes('no kind called not-a-kind'), nonsense.body.why)
+
+  const unnamed = await post(a, '/instance', { do: 'add', id: '  ', artifact: 'shortlink', kind: 'shortlink' })
+  assert.equal(unnamed.body.ok, false)
+})
+
+it('only the ports an admin decides are spelled on a create', async () => {
+  const a = app()
+  await post(a, '/canvas', { document: document({ mode: 'plan' }) })
+
+  // The studio has an optional `image` and a `many` links, and a `one` encoder.
+  // A `one` port has no unbound state — the planner derives it — so writing it
+  // here would be inventing a decision nobody made.
+  const out = await post(a, '/instance', { do: 'add', id: 'studio-2', artifact: 'studio', kind: 'studio' })
+  assert.equal(out.body.ok, true, out.body.why)
+  const named = out.body.decide.map((/** @type {any} */ p) => p.name)
+  assert.ok(named.includes('links'), 'a many port is not among the ports to decide')
+  assert.strictEqual(named.includes('encoder'), false, 'a one port is being asked about')
+  assert.strictEqual(named.includes('listen'), false, 'a platform port is being asked about')
+
+  const bind = /--bind '([^']*)'/.exec(out.body.commands[0])
+  if (bind === null) throw new Error(`there are ports to decide and no --bind: ${out.body.commands[0]}`)
+  assert.ok(bind[1].includes('links=[]'), `an empty many port is not spelled as a list: ${bind[1]}`)
+  assert.ok(bind[1].includes('image=null'), `a declined optional port is not spelled null: ${bind[1]}`)
+})
+
+it('a removal says what it burns and who it breaks, before it is run', async () => {
+  const a = app()
+  await post(a, '/canvas', { document: document({ mode: 'plan' }) })
+
+  const out = await post(a, '/instance', { do: 'remove', id: 'links-qr' })
+  assert.equal(out.body.ok, true, out.body.why)
+  assert.equal(out.body.burns, 'links-qr')
+  assert.ok(out.body.commands[0].includes('--confirm links-qr'), out.body.commands[0])
+  // The studio binds it, and saying so afterwards is a post-mortem.
+  assert.ok(out.body.depend.includes('studio'), `nothing was named as depending on it: ${out.body.depend}`)
+  assert.ok(out.body.why.includes('studio'), out.body.why)
+
+  const nothing = await post(a, '/instance', { do: 'remove', id: 'never-existed' })
+  assert.equal(nothing.body.ok, false)
+})
+
+it('a read-only document will not add or remove either', async () => {
+  const reading = app()
+  await post(reading, '/canvas', { document: document({ mode: 'read' }) })
+  for (const sent of [{ do: 'add', id: 'x', artifact: 'shortlink', kind: 'shortlink' }, { do: 'remove', id: 'links-qr' }]) {
+    const refused = await post(reading, '/instance', sent)
+    assert.equal(refused.body.ok, false, `a read-only graph worked out a ${sent.do}`)
+    assert.ok(refused.body.why.includes('read-only'), refused.body.why)
+  }
+})
+
 it('a read-only document will not even work out a change', async () => {
   // The mode is a property of the document, so this application cannot grant
   // itself authority it was not handed.

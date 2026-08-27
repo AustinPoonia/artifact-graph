@@ -42,9 +42,10 @@ function fakeDocument (html, extra = []) {
     if (named) data.add(named[1])
   }
 
-  /** @type {{ calls: string[], fetches: { path: string, sent: any }[], fire?: any, at?: any }} */
+  /** @type {{ calls: string[], fetches: { path: string, sent: any }[], fire?: any, at?: any, where?: any,
+   *   copied?: string[], selected?: number, nest?: any }} */
   const seen = { calls: [], fetches: [] }
-  /** @type {Map<string, Function>} */
+  /** @type {Map<string, Function[]>} */
   const handlers = new Map()
 
   /** @type {Map<string, any>} */
@@ -79,7 +80,10 @@ function fakeDocument (html, extra = []) {
       },
       addEventListener (/** @type {string} */ event, /** @type {Function} */ fn) {
         seen.calls.push(what + ':' + event)
-        handlers.set(what + ':' + event, fn)
+        const key = what + ':' + event
+        const held = handlers.get(key)
+        if (held) held.push(fn)
+        else handlers.set(key, [fn])
       },
       removeAttribute (/** @type {string} */ a) { delete el.attrs[a] },
       setAttribute (/** @type {string} */ a, /** @type {string} */ v) { el.attrs[a] = v },
@@ -97,12 +101,31 @@ function fakeDocument (html, extra = []) {
         return ''
       },
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+      // Recorded rather than ignored: an element the page *makes* and hangs on
+      // the document is one no selector in the markup can find, so the only way
+      // a case can see it is to watch it being attached.
+      children: /** @type {any[]} */ ([]),
+      appendChild (/** @type {any} */ child) { el.children.push(child); return child },
       setPointerCapture () {},
       releasePointerCapture () {},
       querySelector: (/** @type {string} */ q) => query(q),
       querySelectorAll: (/** @type {string} */ q) => queryAll(q),
-      closest: (/** @type {string} */ q) => (what.includes(q.replace(/\[|\]/g, '')) ? el : null),
+      // Real containment, because half of what this page does is decided by what
+      // an element is *inside*: a port is inside a node, a drawer is inside the
+      // viewport. Without it `closest` only ever matched the element itself, and
+      // two cases about exactly that containment passed with the code deleted.
+      ancestors: /** @type {any[]} */ ([]),
+      closest: (/** @type {string} */ q) => {
+        const want = q.replace(/\[|\]/g, '')
+        if (what.includes(want)) return el
+        for (const up of el.ancestors) if (String(up.what).includes(want)) return up
+        return null
+      },
       focus () {},
+      opened: false,
+      showModal () { el.opened = true; el.open = true },
+      close () { el.open = false },
+      scrollIntoView () {},
       dispatchEvent () {}
     }
     return el
@@ -143,17 +166,39 @@ function fakeDocument (html, extra = []) {
     querySelector: query,
     querySelectorAll: queryAll,
     addEventListener (/** @type {string} */ event, /** @type {Function} */ fn) {
+      // Appended, not replaced. A page may listen for one event more than once —
+      // this one has two `keydown` handlers, a canvas camera and a command menu
+      // — and a fake that keeps the last silently deleted the first. Every case
+      // about panning went on passing until the second listener was added, and
+      // then failed for a reason that had nothing to do with panning.
       seen.calls.push('document:' + event)
-      handlers.set('document:' + event, fn)
+      const key = 'document:' + event
+      const held = handlers.get(key)
+      if (held) held.push(fn)
+      else handlers.set(key, [fn])
     },
-    createElement: () => build('created')
+    createElement: () => build('created'),
+    createRange: () => ({ selectNodeContents () {} }),
+    // Through `element`, not `build`, so `seen.at('body')` is the same object the
+    // page hung something on. A second one looks identical and has no children.
+    get body () { return element('body') }
   }
 
   seen.at = (/** @type {string} */ selector) => element(selector)
+  /** Put one element inside others, outermost last. */
+  seen.nest = (/** @type {string} */ selector, /** @type {string[]} */ within) => {
+    element(selector).ancestors = within.map((/** @type {string} */ one) => element(one))
+    return element(selector)
+  }
   seen.fire = (/** @type {string} */ key, /** @type {any} */ event) => {
-    const fn = handlers.get(key)
-    if (!fn) throw new Error('nothing listened for ' + key)
-    return fn(event || { target: element(key.split(':')[0]) })
+    const held = handlers.get(key)
+    if (!held) throw new Error('nothing listened for ' + key)
+    const sent = event || { target: element(key.split(':')[0]) }
+    // Every listener, in the order they registered, exactly as a real target
+    // dispatches. Returning the last one's value keeps the existing callers.
+    let out
+    for (const fn of held) out = fn(sent)
+    return out
   }
 
   return { document, seen }
@@ -167,8 +212,9 @@ function fakeDocument (html, extra = []) {
  * @param {string} [opts.hash]
  * @param {string[]} [opts.extra]
  * @param {any} [opts.answer]
+ * @param {boolean} [opts.clipboard]  false for a window that has none
  */
-function run (html, { hash = '', extra = [], answer = {} } = {}) {
+function run (html, { hash = '', extra = [], answer = {}, clipboard = true } = {}) {
   const { document, seen } = fakeDocument(html, extra)
 
   const fetch = (/** @type {string} */ path, /** @type {any} */ init) => {
@@ -178,16 +224,35 @@ function run (html, { hash = '', extra = [], answer = {} } = {}) {
     })
   }
 
+  // Exposed, because a command that navigates is checked by where it navigated
+  // to. The fake fires no `hashchange`, so `goTo` sets the address and the
+  // router does not follow — which is the fake's limit, not the page's, and
+  // asserting on the address rather than the fetch keeps the case about the
+  // command instead of about the router.
+  const where = { hash }
+  seen.where = where
   const window = {
-    location: { hash },
+    location: where,
     addEventListener: () => {},
     setTimeout: (/** @type {() => void} */ fn) => { fn(); return 0 },
-    clearTimeout: () => {}
+    clearTimeout: () => {},
+    getSelection: () => ({ removeAllRanges () {}, addRange () { seen.selected = (seen.selected || 0) + 1 } })
   }
 
-  const go = new Function('document', 'window', 'fetch', 'setTimeout', 'clearTimeout', 'Event', BEHAVIOUR)
+  /** What the page put on the clipboard, and how often it fell back to a selection. */
+  const copied = /** @type {string[]} */ ([])
+  seen.copied = copied
+  seen.selected = 0
+
+  // Passed in rather than left to the global, so a case can take it away. The
+  // script names `navigator` and a browser always has one; this shadows it.
+  const navigator = clipboard
+    ? { clipboard: { writeText: (/** @type {string} */ what) => { copied.push(what); return Promise.resolve() } } }
+    : {}
+
+  const go = new Function('document', 'window', 'fetch', 'setTimeout', 'clearTimeout', 'Event', 'navigator', BEHAVIOUR)
   go(document, window, fetch, (/** @type {() => void} */ fn) => { fn(); return 0 }, () => {},
-    function Event () { return {} })
+    function Event () { return {} }, navigator)
 
   return seen
 }
@@ -203,6 +268,8 @@ const settle = () => new Promise((resolve) => setTimeout(() => resolve(null), 0)
 
 /** The page every case below runs against. */
 let HTML = ''
+/** The same page under a document that may work a change out. */
+let PLANNING = ''
 
 /** The selectors the canvas fragment adds once it has been fetched. */
 const DRAWN = [
@@ -296,11 +363,16 @@ it('the rail opens on a node, closes on a list, and closes on Escape', async () 
 it('a filter is sent with every drawing, and a filter nobody set is empty', async () => {
   const seen = run(HTML)
   const canvas = must(seen.fetches.find((f) => f.path === '/canvas'), 'nothing drew the canvas')
-  for (const key of ['focus', 'depth', 'artifact', 'find', 'fold', 'faults']) {
+  for (const key of ['focus', 'depth', 'artifact', 'fold', 'faults']) {
     assert.ok(key in canvas.sent, `the canvas was drawn without ${key}`)
   }
   assert.equal(canvas.sent.focus, '')
   assert.equal(canvas.sent.fold, '')
+
+  // No `find`. Searching is the command menu, and it opens what you name rather
+  // than narrowing the canvas — a box that filtered the drawing and a box that
+  // jumped to a node were two answers to one question.
+  assert.strictEqual('find' in canvas.sent, false, 'the canvas is still being drawn with a find filter')
 })
 
 it('zooming keeps the point under the pointer under the pointer', async () => {
@@ -470,8 +542,297 @@ it('dragging a provider takes its edges with it, from the right socket', async (
   assert.notEqual(Number(ends[2]), 200 + 80, 'the spline went back to the middle of the node')
 })
 
+it('the command menu opens, filters, and runs what an item names', async () => {
+  const seen = run(HTML, { extra: [...DRAWN, '[data-command-item]', '[data-command-find]', '[data-command-group]', '[data-command-empty]'] })
+  await settle()
+
+  const box = seen.at('#palette')
+  box.open = false
+  seen.fire('document:click', { target: seen.at('#do-palette') })
+  assert.strictEqual(box.calls, undefined)
+  assert.ok(box.opened, 'the search button did not open the command menu')
+
+  // ⌘K and Ctrl-K, because a command menu that only answers one of them is one
+  // half of a keyboard's users cannot reach.
+  box.opened = false
+  box.open = false
+  seen.fire('document:keydown', { key: 'k', metaKey: true, preventDefault () {} })
+  assert.ok(box.opened, 'meta-K did not open it')
+  box.opened = false
+  box.open = false
+  seen.fire('document:keydown', { key: 'k', ctrlKey: true, preventDefault () {} })
+  assert.ok(box.opened, 'ctrl-K did not open it')
+
+  // An item runs by what it says, not by where it is.
+  const item = seen.at('[data-command-item]')
+  item.setAttribute('data-run', 'open:studio')
+  seen.fire('document:click', { target: item })
+  assert.equal(seen.where.hash, '#/node/studio', `running an open command went to ${seen.where.hash}`)
+  assert.strictEqual(box.open, false, 'the menu stayed open after running a command')
+
+  // Clicking the grey outside it. A dialog paints its own backdrop and swallows
+  // the click rather than dismissing itself, so this is the page's job — and the
+  // tell is that the click lands on the dialog element, its children covering it
+  // completely.
+  box.open = true
+  seen.fire('document:click', { target: box })
+  assert.strictEqual(box.open, false, 'clicking outside the menu did not close it')
+
+  // And a click *inside* it does not, or the menu closes on the way to an item.
+  box.open = true
+  seen.fire('document:click', { target: seen.at('[data-command-find]') })
+  assert.strictEqual(box.open, true, 'clicking the search field closed the menu')
+})
+
+it('hovering a socket says what it is, and the browser is not asked to', async () => {
+  const seen = run(HTML, { extra: [...DRAWN, '[data-tip]'] })
+  await settle()
+
+  const socket = seen.at('[data-tip]')
+  socket.setAttribute('data-tip', 'links — wants shortlink ^1.3.0, takes any number.\n\nBound to links-qr.')
+  socket.setAttribute('title', 'links — wants shortlink ^1.3.0, takes any number.\n\nBound to links-qr.')
+
+  seen.fire('document:pointerover', { target: socket, clientX: 100, clientY: 120 })
+
+  // The page draws it. The native one waits about a second before appearing,
+  // which on a canvas somebody sweeps a pointer across means it mostly does not.
+  const box = seen.at('body').children.find((/** @type {any} */ c) => c.classes.includes('k-tip') ||
+    String(c.className || '') === 'k-tip')
+  if (box === undefined) throw new Error('nothing was hung on the document to draw a tooltip in')
+  assert.strictEqual(box.hidden, false, 'the tooltip stayed hidden')
+  assert.ok(String(box.textContent).includes('takes any number'), `the tooltip says ${JSON.stringify(box.textContent)}`)
+
+  // And the browser's own is taken off while ours is up, or a reader gets two
+  // boxes saying the same thing.
+  assert.strictEqual(socket.attrs.title, undefined, 'both tooltips are on at once')
+
+  // It follows the pointer rather than sitting where the pointer entered.
+  const was = box.style.left
+  seen.fire('document:pointermove', { target: socket, clientX: 300, clientY: 320 })
+  assert.notEqual(box.style.left, was, 'the tooltip did not follow the pointer')
+
+  // Leaving puts the title back, so a page whose script stops working still has
+  // the browser's.
+  seen.fire('document:pointerout', { target: socket, relatedTarget: null })
+  assert.strictEqual(box.hidden, true, 'the tooltip stayed up after the pointer left')
+  assert.ok(socket.attrs.title, 'the browser tooltip was never put back')
+
+  // A drag is not a read: a tooltip stuck to the pointer is in the way of the
+  // thing it is about.
+  seen.fire('document:pointerover', { target: socket, clientX: 100, clientY: 120 })
+  assert.strictEqual(box.hidden, false)
+  seen.fire('document:pointerdown', { target: socket, clientX: 100, clientY: 120, pointerId: 1 })
+  assert.strictEqual(box.hidden, true, 'the tooltip survived a drag starting under it')
+})
+
+it('the drawer and the toolbar are not the canvas', async () => {
+  // Both float *inside* the viewport, so a press on either was starting a pan:
+  // dragging a kind out of the drawer panned the graph and carried nothing, and
+  // pressing a tool nudged it sideways.
+  const seen = run(PLANNING, { hash: '#/', extra: [...DRAWN, '[data-graph-put]', '[data-graph-tool]', '[data-graph-drawer]'] })
+  await settle()
+
+  const before = { ...seen.at('[data-graph-world]').style }
+  // Inside the viewport, which is where it really is — that is the whole reason
+  // a press on it was starting a pan.
+  const put = seen.nest('[data-graph-put]', ['[data-graph-drawer]', '[data-graph-viewport]'])
+  put.setAttribute('data-graph-put', 'shortlink/shortlink')
+
+  seen.fire('document:pointerdown', { target: put, clientX: 100, clientY: 100, pointerId: 1 })
+  seen.fire('document:pointermove', { target: put, clientX: 300, clientY: 260 })
+  assert.equal(seen.at('[data-graph-world]').style.transform, before.transform,
+    'dragging out of the drawer panned the canvas')
+
+  // The drawer's own background too, not only its buttons: it is a panel with
+  // gaps in it, and a press that lands between two kinds must not pan either.
+  const shelf = seen.nest('[data-graph-drawer]', ['[data-graph-viewport]'])
+  seen.fire('document:pointerdown', { target: shelf, clientX: 60, clientY: 300, pointerId: 2 })
+  seen.fire('document:pointermove', { target: shelf, clientX: 500, clientY: 300 })
+  assert.equal(seen.at('[data-graph-world]').style.transform, before.transform,
+    'pressing the drawer itself panned the canvas')
+
+  // And letting go over the canvas places it, at the pointer.
+  seen.fire('document:pointerup', { target: seen.at('[data-graph-viewport]'), clientX: 300, clientY: 260 })
+  await settle()
+
+  const placed = seen.fetches.filter((f) => f.path === '/draft' && f.sent.do === 'place')
+  assert.equal(placed.length, 1, `the drop asked to place ${placed.length} times`)
+  assert.equal(placed[0].sent.artifact, 'shortlink')
+  assert.equal(placed[0].sent.kind, 'shortlink')
+  assert.ok(Number.isFinite(placed[0].sent.x) && Number.isFinite(placed[0].sent.y), 'it landed nowhere in particular')
+})
+
+it('wiring does not pick the node up on the way past', async () => {
+  // The port is *inside* the node, so a press on it was starting a node drag and
+  // the gesture that begins a wire moved the thing the wire comes out of.
+  const seen = run(PLANNING, { hash: '#/', extra: [...DRAWN, '[data-graph-tool]'] })
+  await settle()
+
+  const tool = seen.at('[data-graph-tool]')
+  tool.setAttribute('data-graph-tool', 'wire')
+  seen.fire('document:click', { target: tool })
+  await settle()
+
+  const node = seen.at('[data-node]')
+  node.setAttribute('data-node', 'studio-2')
+  // A port is *inside* its node, which is why pressing one used to pick the node
+  // up.
+  const port = seen.nest('[data-port]', ['[data-node]', '[data-graph-viewport]'])
+  port.setAttribute('data-port', 'studio-2 links')
+  const was = node.style.left
+
+  seen.fire('document:pointerdown', { target: port, clientX: 120, clientY: 140, pointerId: 1 })
+  seen.fire('document:pointermove', { target: port, clientX: 400, clientY: 400 })
+  assert.equal(node.style.left, was, 'starting a wire dragged the node')
+
+  // Two clicks: the port, then the node that answers it.
+  seen.fire('document:click', { target: port })
+  assert.equal(port.attrs['data-arm'], 'from', 'the port was not armed')
+
+  seen.fire('document:click', { target: node })
+  await settle()
+  const wired = seen.fetches.filter((f) => f.path === '/draft' && f.sent.do === 'wire')
+  assert.equal(wired.length, 1, `the second click asked to wire ${wired.length} times`)
+  assert.equal(wired[0].sent.from, 'studio-2')
+  assert.equal(wired[0].sent.port, 'links')
+})
+
+it('a step moves the field it names and redraws', async () => {
+  const seen = run(HTML, { extra: DRAWN })
+  await settle()
+
+  const field = seen.at('#depth')
+  field.value = '1'
+  field.min = '0'
+  field.max = '3'
+
+  const step = seen.at('[data-step]')
+  step.setAttribute('data-step', '1')
+  step.setAttribute('data-for', 'depth')
+  const before = seen.fetches.filter((f) => f.path === '/canvas').length
+  seen.fire('document:click', { target: step })
+  assert.equal(field.value, '2', `the step left the field at ${field.value}`)
+  assert.ok(seen.fetches.filter((f) => f.path === '/canvas').length > before, 'stepping did not redraw')
+
+  // And it stops at the bounds rather than running past them: a depth of 4 is a
+  // request the routes clamp anyway, so a control that offers it is lying.
+  field.value = '3'
+  seen.fire('document:click', { target: step })
+  assert.equal(field.value, '3', 'the step went past max')
+
+  step.setAttribute('data-step', '-1')
+  field.value = '0'
+  seen.fire('document:click', { target: step })
+  assert.equal(field.value, '0', 'the step went below min')
+})
+
+it('adding is a form and removing is about the node that is open', async () => {
+  const seen = run(PLANNING, { hash: '#/', extra: DRAWN, answer: { ok: true, commands: ['artifact-operator instance create a b c'], why: 'because' } })
+  await settle()
+
+  // `hidden` at rest is asserted over the markup in `test/screen.test.js`: this
+  // fake builds every element the same way, so its idea of what starts hidden is
+  // the fake's, not the page's.
+  const panel = seen.at('#change-panel')
+  const form = seen.at('#change-add')
+  panel.hidden = true
+
+  // Nothing is open, so a removal has nothing to be about and says so rather
+  // than asking the reader to type an id they are looking at.
+  const item = seen.at('[data-command-item]')
+  item.setAttribute('data-run', 'remove')
+  seen.fire('document:click', { target: item })
+  assert.strictEqual(panel.hidden, true, 'a removal with nothing open opened the panel anyway')
+  assert.strictEqual(seen.fetches.some((f) => f.path === '/instance'), false,
+    'a removal with nothing open still asked what it would cost')
+  assert.ok(String(seen.at('#said').textContent).length > 0, 'nothing was said about why nothing happened')
+
+  // Adding needs nothing open, and is a form rather than a command that fires.
+  item.setAttribute('data-run', 'add')
+  seen.fire('document:click', { target: item })
+  assert.strictEqual(panel.hidden, false, 'the add panel did not open')
+  assert.strictEqual(form.hidden, false, 'the add form is hidden on an add')
+  assert.strictEqual(seen.fetches.some((f) => f.path === '/instance'), false,
+    'the page asked what an unnamed instance would cost before anybody typed one')
+
+  // Nothing to copy before anything has been worked out.
+  assert.strictEqual(seen.at('#do-copy').hidden, true, 'the copy button is offered with nothing to copy')
+
+  seen.at('#new-id').value = 'links-3'
+  seen.at('#new-kind').value = 'shortlink/shortlink'
+  seen.fire('document:click', { target: seen.at('#do-change') })
+  await settle()
+
+  const asked = seen.fetches.filter((f) => f.path === '/instance')
+  assert.equal(asked.length, 1, `the page asked ${asked.length} times`)
+  assert.equal(asked[0].sent.do, 'add')
+  assert.equal(asked[0].sent.id, 'links-3')
+  // The one select carries both halves, and the page takes them apart.
+  assert.equal(asked[0].sent.artifact, 'shortlink')
+  assert.equal(asked[0].sent.kind, 'shortlink')
+  assert.ok(String(seen.at('#change-out').innerHTML).includes('artifact-operator instance create'),
+    'the command that came back was not printed')
+
+  // Both commands at once, in the order they have to be run: copying them one at
+  // a time is where somebody runs the removal and not the create.
+  assert.strictEqual(seen.at('#do-copy').hidden, false, 'there is a command and no way to copy it')
+  seen.fire('document:click', { target: seen.at('#do-copy') })
+  const wrote = seen.copied || []
+  assert.equal(wrote.length, 1, `the clipboard was written ${wrote.length} times`)
+  assert.ok(wrote[0].includes('instance create'), wrote[0])
+
+  // And closing it is a control, not a reload.
+  seen.fire('document:click', { target: seen.at('#do-change-off') })
+  assert.strictEqual(panel.hidden, true, 'the panel would not close')
+  assert.strictEqual(seen.at('#do-copy').hidden, true, 'the copy button outlived what it would copy')
+})
+
+it('a window with no clipboard selects the commands instead of doing nothing', async () => {
+  // `navigator.clipboard` is absent outside a secure context, and this
+  // platform's own window is a bare-native WebView where `navigator.mediaDevices`
+  // is absent rather than refused. A button that silently does nothing there is
+  // worse than one that does something else.
+  const seen = run(PLANNING, { hash: '#/', extra: DRAWN, clipboard: false, answer: { ok: true, commands: ['artifact-operator instance create a b c'], why: 'because' } })
+  await settle()
+
+  const item = seen.at('[data-command-item]')
+  item.setAttribute('data-run', 'add')
+  seen.fire('document:click', { target: item })
+  seen.fire('document:click', { target: seen.at('#do-change') })
+  await settle()
+
+  seen.fire('document:click', { target: seen.at('#do-copy') })
+  assert.ok((seen.selected || 0) > 0, 'nothing was selected and nothing was copied')
+  assert.ok(String(seen.at('#said').textContent).toLowerCase().includes('copy it yourself'),
+    `it said ${JSON.stringify(seen.at('#said').textContent)}`)
+})
+
+it('a removal is about the node the canvas has open', async () => {
+  const seen = run(PLANNING, { hash: '#/node/links-qr', extra: DRAWN, answer: { ok: true, commands: ['artifact-operator instance remove links-qr --confirm links-qr'], burns: 'links-qr', why: 'it burns the id' } })
+  await settle()
+
+  const item = seen.at('[data-command-item]')
+  item.setAttribute('data-run', 'remove')
+  seen.fire('document:click', { target: item })
+  await settle()
+
+  const asked = seen.fetches.filter((f) => f.path === '/instance')
+  assert.equal(asked.length, 1, `the page asked ${asked.length} times`)
+  assert.equal(asked[0].sent.do, 'remove')
+  assert.equal(asked[0].sent.id, 'links-qr', 'the removal was about something other than the open node')
+  assert.strictEqual(seen.at('#change-add').hidden, true, 'the add form is on screen during a removal')
+  assert.ok(String(seen.at('#change-out').innerHTML).includes('--confirm links-qr'),
+    'the command that came back was not printed')
+})
+
 async function main () {
-  HTML = await screen({ kit, script: BEHAVIOUR, network: 'test', artifacts: ['kit', 'shortlink'] })
+  const of = { kit, script: BEHAVIOUR, network: 'test', artifacts: ['kit', 'shortlink'] }
+  HTML = await screen(of)
+  PLANNING = await screen({
+    ...of,
+    mode: 'plan',
+    kinds: [{ artifact: 'shortlink', kind: 'shortlink', label: 'shortlink · shortlink' }]
+  })
   t.plan(cases.length)
   for (const [n, f] of cases) {
     try { await f(); t.pass(n) } catch (/** @type {any} */ e) { t.fail(`${n} — ${e && e.message}`) }

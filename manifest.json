@@ -1,6 +1,6 @@
 {
   "name": "graph",
-  "version": "1.0.0",
+  "version": "1.5.0",
   "entry": "/index.js",
   "deps": [
     {
@@ -9,14 +9,14 @@
     },
     {
       "name": "kit",
-      "range": "^1.16.0"
+      "range": "^1.17.0"
     }
   ],
   "contracts": [],
   "kinds": [
     {
       "key": "graph",
-      "version": "1.0.0",
+      "version": "1.5.0",
       "provides": [
         {
           "id": "cli",
@@ -31,9 +31,9 @@
         {
           "name": "kit",
           "contract": "kit",
-          "range": "^1.9.0",
+          "range": "^1.10.0",
           "cardinality": "one",
-          "description": "Every element on the page, the canvas included. This artifact writes no markup of its own beyond layout containers, and its suite asserts that by scanning for classes the kit does not build.\n\n^1.9.0 because the canvas is the kit's `graph` component, which is a member of a **closed enum** added in the kit contract's 1.9.0. A lower range would resolve to a baseline whose enum does not contain it, and asking for a component the contract does not name is refused at the call rather than drawn badly.\n\nA port's range is a version of the contract; `deps` above carries a version of the artifact — 1.9.0 and 1.14.0, for the same kit. Writing the second here is a port no provider can satisfy, and `ArtifactPatform/test/surface.test.js` sweeps the whole tree for it because a repository's own suite cannot: a suite binds a fake, and a fake has no version."
+          "description": "Every element on the page, the canvas included. This artifact writes no markup of its own beyond layout containers, and its suite asserts that by scanning for classes the kit does not build.\n\n^1.10.0 because the canvas is the kit's `graph` component and the controls beside it are its `command` and `stepper`, all members of a **closed enum** — `graph` came in the contract's 1.9.0 and the other two in 1.10.0. A lower range would resolve to a baseline whose enum does not contain them, and asking for a component the contract does not name is refused at the call rather than drawn badly.\n\nA port's range is a version of the contract; `deps` above carries a version of the artifact — 1.10.0 and 1.17.0, for the same kit. Writing the second here is a port no provider can satisfy, and `ArtifactPatform/test/surface.test.js` sweeps the whole tree for it because a repository's own suite cannot: a suite binds a fake, and a fake has no version."
         },
         {
           "name": "listen",

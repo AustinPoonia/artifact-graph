@@ -108,6 +108,15 @@ async function planned (change) {
   return JSON.parse(out.body)
 }
 
+/** The same, for an instance added or taken away. @param {any} sent */
+async function instanced (sent) {
+  const app = routes({ kit, script: 'void 0', title: 'Graph' })
+  const document = { network: 'testnet', mode: 'plan', instances: WIRING, manifests: SET, problems: [] }
+  await app.handle({ method: 'POST', path: '/canvas', query: {}, body: JSON.stringify({ document }) })
+  const out = await app.handle({ method: 'POST', path: '/instance', query: {}, body: JSON.stringify(sent) })
+  return JSON.parse(out.body)
+}
+
 /**
  * A command line, taken apart the way a shell would.
  *
@@ -233,6 +242,55 @@ it('a comma-joined list is a line the operator refuses, which is what this used 
   assert.strictEqual(Array.isArray(wrong.links), false,
     'the comma spelling parses as a list after all, and this case is measuring nothing')
   assert.equal(wrong.links, 'links-qr,links-go')
+})
+
+it('the add and the remove are verbs the operator declares, with flags it takes', async () => {
+  const added = await instanced({ do: 'add', id: 'studio-2', artifact: 'studio', kind: 'studio' })
+  assert.equal(added.ok, true, added.why)
+  const removed = await instanced({ do: 'remove', id: 'links-qr' })
+  assert.equal(removed.ok, true, removed.why)
+
+  for (const line of [...added.commands, ...removed.commands]) {
+    const { positional, flags } = parts(line)
+    const found = verb([positional[0], positional[1]])
+    assert.ok(found.action, `${positional[0]} ${positional[1]} names no action`)
+
+    const declared = new Set((found.options ?? []).map((/** @type {any} */ o) => o.name))
+    for (const name of Object.keys(flags)) {
+      assert.ok(declared.has(name),
+        `${positional[0]} ${positional[1]} does not take --${name}; it takes ${[...declared].join(', ')}`)
+    }
+    for (const option of (found.options ?? []).filter((/** @type {any} */ o) => o.required)) {
+      assert.ok(option.name in flags, `${found.name} requires --${option.name} and the line does not carry it`)
+    }
+    const args = (found.arguments ?? []).filter((/** @type {any} */ a) => a.required)
+    assert.ok(positional.length - 2 >= args.length,
+      `${found.name} needs ${args.length} argument(s) and the line carries ${positional.length - 2}`)
+  }
+})
+
+it('the bind an add writes is the bind the operator parses', async () => {
+  // Same assertion as the rewiring above, for the other command that carries
+  // one: a create whose --bind means something other than what the form said is
+  // a wrong network signed on the first try.
+  const added = await instanced({ do: 'add', id: 'studio-2', artifact: 'studio', kind: 'studio' })
+  const spelled = must(parts(added.commands[0]).flags.bind, 'the create carries no --bind')
+  const parsed = operatorArgs.bindings(spelled)
+
+  for (const port of added.decide) {
+    assert.ok(port.name in parsed, `${port.name} is a port to decide and the operator does not see it`)
+    if (port.cardinality === 'many') {
+      const list = parsed[port.name]
+      assert.ok(Array.isArray(list) && list.length === 0,
+        `${port.name} is a many port and came back as ${JSON.stringify(list)}`)
+    } else {
+      assert.strictEqual(parsed[port.name], null,
+        `${port.name} is optional and came back as ${JSON.stringify(parsed[port.name])}`)
+    }
+  }
+  // And nothing else: a `one` port spelled here is a decision nobody made.
+  assert.equal(Object.keys(parsed).length, added.decide.length,
+    `the command binds ${Object.keys(parsed).join(', ')} and only ${added.decide.length} are anybody's to decide`)
 })
 
 async function main () {

@@ -12,7 +12,7 @@ const fs = require('bare-fs')
 
 const kit = require('artifact-kit').build({}, {})
 
-const { screen, VIEWS, DEPTHS, TITLE } = require('../lib/screen')
+const { screen, VIEWS, TITLE } = require('../lib/screen')
 const { BEHAVIOUR } = require('../lib/behaviour')
 
 /** @type {[string, () => void | Promise<void>][]} */
@@ -23,7 +23,14 @@ const it = (n, f) => cases.push([n, f])
 const ARTIFACTS = ['kit', 'shortlink', 'studio']
 
 /** @param {object} [opts] */
-const page = (opts = {}) => screen({ kit, script: BEHAVIOUR, network: 'test', artifacts: ARTIFACTS, ...opts })
+const INSTANCES = [
+  { id: 'studio', artifact: 'studio' },
+  { id: 'links-go', artifact: 'shortlink' }
+]
+
+const page = (/** @type {any} */ opts = {}) => screen(/** @type {any} */ ({
+  kit, script: BEHAVIOUR, network: 'test', artifacts: ARTIFACTS, instances: INSTANCES, ...opts
+}))
 
 /** The ordinary page, built once — most cases below only read it. */
 let HTML = ''
@@ -67,11 +74,17 @@ it('every view carries the heading VIEWS gives it, and VIEWS names every view', 
   }
 })
 
-it('every element the script fetches by id exists on the page', () => {
+it('every element the script fetches by id exists on the page', async () => {
   // A `getElementById` that comes back null is a control that silently does
   // nothing, which looks exactly like a control that works.
+  //
+  // Over both screens, because the mode decides what is built: the panel that
+  // works out a change is not on a read-only page, and the script checks for it
+  // rather than assuming it. One screen would fail on ids the other is the only
+  // one that has.
   const wanted = [...BEHAVIOUR.matchAll(/\$\('([a-z-]+)'\)/g)].map((m) => m[1])
-  const built = new Set([...HTML.matchAll(/id="([^"]+)"/g)].map((m) => m[1]))
+  const both = HTML + await page({ mode: 'plan' })
+  const built = new Set([...both.matchAll(/id="([^"]+)"/g)].map((m) => m[1]))
 
   for (const id of new Set(wanted)) {
     assert.ok(built.has(id), `the script asks for #${id} and no screen builds it`)
@@ -84,7 +97,9 @@ it('every filter the script sends is a filter a route reads', () => {
   // ends look completely normal on their own.
   const source = fs.readFileSync(require.resolve('../lib/routes.js')).toString()
   const sent = [...BEHAVIOUR.matchAll(/^\s{6}([a-z]+): \$\('/gm)].map((m) => m[1])
-  assert.ok(sent.length >= 5, `only ${sent.length} filters found in the script`)
+  // Four, since Find left: depth, artifact, fold, faults. `focus` is sent too
+  // and is not read off a field, so it is not counted here.
+  assert.ok(sent.length >= 4, `only ${sent.length} filters found in the script`)
 
   for (const name of new Set(sent)) {
     assert.ok(source.includes(`sent.${name}`), `the page sends ${name} and no route reads it`)
@@ -113,23 +128,32 @@ it('the mode is stated before anybody tries to change something', async () => {
   // canvas, was read once, and cost a fifth of the panel to go on saying
   // something nobody could act on; the sentence that *is* actionable is beside
   // the ports it constrains, on a node's page — `test/routes.test.js`.
+  // It is a menu now rather than a word, and what the menu *offers* is the part
+  // worth guarding: the document hands over a ceiling, so a read-only graph must
+  // not present Plan as something a reader can simply choose.
   const reading = await page({ mode: 'read' })
-  assert.ok(reading.includes('Read only'), 'a read-only instance does not say so')
+  assert.ok(reading.includes('id="mode"'), 'there is no way to see or change the mode')
+  assert.ok(/Plan \(not available\)/.test(reading), 'a read-only graph offers Plan as though it were a choice')
+  assert.ok(/Edit \(not available\)/.test(reading), 'a read-only graph offers Edit as though it were a choice')
 
-  const planning = await page({ mode: 'plan' })
-  assert.ok(planning.includes('Plan only'), 'a planning instance claims more or less than it has')
-  assert.strictEqual(planning.includes('Read only'), false)
+  const planning = await page({ mode: 'plan', ceiling: 'plan' })
+  assert.strictEqual(/Plan \(not available\)/.test(planning), false, 'a planning graph will not let anybody plan')
+  // Lowering is always allowed, and is a real thing to want: a canvas nobody can
+  // accidentally work a change out on while showing it to somebody.
+  assert.strictEqual(/Read only \(not available\)/.test(planning), false, 'a planning graph cannot be made read-only')
+  // And Edit is never available, on any document this platform produces.
+  assert.ok(/Edit \(not available\)/.test(planning), 'a planning graph offers Edit')
 
   // Whichever it is, it is in the header rather than in the body — so it does
   // not scroll away and does not take room from the canvas.
   const header = /<header class="k-inset-header">[\s\S]*?<\/header>/.exec(planning)
   if (header === null) throw new Error('the inset has no header')
-  assert.ok(header[0].includes('Plan only'), 'the mode is not in the header')
+  assert.ok(header[0].includes('id="mode"'), 'the mode is not in the header')
 
-  // There is no third state. An apply document is read like any other word
-  // nothing recognises, which is to say read-only — see `lib/routes.js`.
-  const applying = await page({ mode: 'apply' })
-  assert.ok(applying.includes('Read only'), 'a mode nothing produces got a screen of its own')
+  // A mode nothing produces is read like any other word nothing recognises,
+  // which is to say read-only — see `lib/routes.js`.
+  const applying = await page({ mode: 'apply', ceiling: 'apply' })
+  assert.ok(/Plan \(not available\)/.test(applying), 'a mode nothing produces got authority of its own')
 })
 
 it('a page with no network says which network it has, rather than a blank', async () => {
@@ -139,17 +163,66 @@ it('a page with no network says which network it has, rather than a blank', asyn
   assert.ok(HTML.includes('test'), 'the network is not named anywhere on an ordinary page')
 })
 
-it('the artifact filter offers what is in the graph and nothing else', async () => {
-  for (const name of ARTIFACTS) {
-    assert.ok(HTML.includes(`value="${name}"`), `${name} is in the graph and not in the filter`)
-  }
-  assert.ok(HTML.includes('All artifacts'), 'there is no way back to the whole graph')
+it('the command menu names every instance and every artifact', async () => {
+  // The Find box and the Artifact menu are gone: five controls across the top of
+  // a picture is the shape a screen takes when nobody has decided where its
+  // controls live. One box that finds anything, and it is not on screen until
+  // it is wanted.
+  assert.strictEqual(HTML.includes('id="find"'), false, 'the Find box is still on the page')
+  assert.ok(HTML.includes('data-command'), 'there is no command menu')
 
-  // A graph of one artifact still offers the filter, because folding and faults
-  // sit beside it — a control that appears and disappears is worse than one
-  // that is briefly uninteresting.
-  const narrow = await page({ artifacts: ['kit'] })
-  assert.ok(narrow.includes('id="artifact"'))
+  for (const one of INSTANCES) {
+    assert.ok(HTML.includes(`data-run="open:${one.id}"`), `${one.id} cannot be opened from the menu`)
+  }
+  for (const name of ARTIFACTS) {
+    assert.ok(HTML.includes(`data-run="only:${name}"`), `${name} cannot be filtered from the menu`)
+  }
+  // And a way back to everything, or a filter is a one-way door.
+  assert.ok(HTML.includes('data-run="only:"'), 'there is no way back to the whole graph')
+
+  // The value the filter sets still exists for the script to read and send.
+  assert.ok(HTML.includes('id="artifact"'), 'nothing holds the artifact filter')
+})
+
+it('adding and removing an instance are commands, and only where they can be answered', async () => {
+  const planning = await page({ mode: 'plan' })
+  assert.ok(planning.includes('data-run="add"'), 'there is no way to add an instance')
+  assert.ok(planning.includes('data-run="remove"'), 'there is no way to remove one')
+  assert.ok(planning.includes('id="change-panel" hidden'), 'the change panel is on screen before anybody asked')
+
+  // And not on a read-only graph, where the routes refuse both: a command that
+  // always comes back refused is a menu teaching the reader to distrust it.
+  assert.strictEqual(HTML.includes('data-run="add"'), false, 'a read-only graph offers to add an instance')
+  assert.strictEqual(HTML.includes('data-run="remove"'), false, 'a read-only graph offers to remove one')
+  // By the id it is built with, not by the name: the script is on the page too,
+  // and it asks for #change-panel whether or not this screen has one.
+  assert.strictEqual(HTML.includes('id="change-panel"'), false, 'a read-only graph builds the change panel')
+})
+
+it('the controls live in the rail, and Hops is a number', async () => {
+  // `Around the focus` was a `<select>` of one, two, three hops: a list of
+  // numbers dressed as a list of choices, where going from 1 to 3 meant opening
+  // a menu and hunting for a word.
+  assert.strictEqual(HTML.includes('Around the focus'), false, 'the old wording is still on the page')
+  assert.ok(HTML.includes('>Hops<'), 'the control is not called Hops')
+  assert.ok(/id="depth"[^>]*type="number"|type="number"[^>]*id="depth"/.test(HTML), 'Hops is not a number field')
+  assert.ok(HTML.includes('data-step="-1"') && HTML.includes('data-step="1"'), 'Hops has no steps')
+
+  // Every control sits in the right rail now, not in a strip over the canvas.
+  const rail = /<aside class="k-sidebar k-sidebar-right"[\s\S]*<\/aside>/.exec(HTML)
+  if (rail === null) throw new Error('there is no right rail')
+  for (const id of ['depth', 'fold', 'faults-only', 'artifact', 'node-panel']) {
+    assert.ok(rail[0].includes(`id="${id}"`), `${id} is not in the rail`)
+  }
+  // Over the markup with the stylesheet taken out: the sheet names every class
+  // it styles, so scanning the whole document finds `k-inset-bar` whether or not
+  // anything uses one. Same trap as the rail count below.
+  const markup = HTML.replace(/<style[\s\S]*?<\/style>/g, '')
+  assert.strictEqual(markup.includes('k-inset-bar'), false, 'the strip of controls is still above the canvas')
+
+  // And the rail starts open, because controls nobody can see are controls
+  // nobody finds.
+  assert.strictEqual(/id="k-aside-toggle" checked/.test(HTML), false, 'the rail holding the controls starts collapsed')
 })
 
 it('every depth the control offers is one the routes accept', () => {
@@ -157,11 +230,14 @@ it('every depth the control offers is one the routes accept', () => {
   const ceiling = /Math\.min\(3,/.exec(source)
   assert.ok(ceiling, 'the routes do not clamp depth, so the control is the only limit')
 
-  for (const depth of DEPTHS) {
-    const n = Number(depth.value)
-    assert.ok(n >= 0 && n <= 3, `the control offers depth ${depth.value} and the routes clamp to 0..3`)
-    assert.ok(depth.label.length > 0, `depth ${depth.value} has no label`)
-  }
+  // The stepper's own bounds, read off the page rather than off a list beside
+  // it: a number field is only as clamped as its min and max say, and a control
+  // that offers 7 where the routes stop at 3 silently draws 3 and says 7.
+  const min = /id="depth"[^>]*min="(-?\d+)"/.exec(HTML)
+  const max = /id="depth"[^>]*max="(-?\d+)"/.exec(HTML)
+  if (min === null || max === null) throw new Error('the Hops control declares no bounds')
+  assert.equal(min[1], '0', 'the control goes below the floor the routes clamp to')
+  assert.equal(max[1], '3', 'the control goes past the ceiling the routes clamp to')
 })
 
 it('the page has a voice, and it is not a developer talking to themselves', () => {
@@ -213,17 +289,20 @@ it('the canvas is the panel, and the node it opens is the other rail', () => {
   // It is a rail on the right rather than a column inside the canvas view, so
   // the canvas is the whole panel when nothing is selected and most of it when
   // something is.
-  const canvas = must(/<div class="k-stack k-gap-0 k-fill" data-view="canvas"[\s\S]*?data-view="instances"/.exec(HTML),
+  const canvas = must(/<div class="k-fill" data-view="canvas"[^>]*id="canvas"><\/div>/.exec(HTML),
     'the canvas view is not on the page')
   assert.ok(canvas[0].includes('id="canvas"'), 'the canvas panel holds no canvas')
-  assert.strictEqual(canvas[0].includes('id="node-panel"'), false,
+  assert.strictEqual(canvas[0].includes('node-panel'), false,
     'the node panel is still inside the canvas view, so it still takes the canvas\'s width')
 
   // The rail is outside the inset entirely, after it — and it is the *same*
   // component as the left one, with its own collapse rather than a bespoke one.
   assert.ok(HTML.includes('<aside class="k-sidebar k-sidebar-right"'), 'there is no right rail')
   assert.ok(HTML.indexOf('id="node-panel"') > HTML.indexOf('</main>'), 'the node panel is not in the rail')
-  assert.ok(/id="k-aside-toggle" checked/.test(HTML), 'the rail is open before anything is selected')
+  // It starts *open* now, because it holds the controls as well as the selected
+  // node — and a control that is not on screen until something is selected is a
+  // control nobody finds.
+  assert.strictEqual(/id="k-aside-toggle" checked/.test(HTML), false, 'the rail holding the controls starts collapsed')
   assert.ok(HTML.includes('for="k-aside-toggle"'), 'the rail has no control to open and close it')
 
   // Two rails, two brands, two handles: whatever the left one has, this has.
