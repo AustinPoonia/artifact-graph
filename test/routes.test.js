@@ -392,6 +392,78 @@ it('a dragged position is kept, and a device with no store says so', async () =>
   assert.equal(bad.status, 400)
 })
 
+it('a block has its own canvas, with the two ends its surface is decided on', async () => {
+  const a = app()
+  const doc = document({
+    mode: 'plan',
+    instances: WIRING.filter((/** @type {any} */ i) => i.id === 'links-qr'),
+    problems: []
+  })
+  await post(a, '/canvas', { document: doc })
+  const put = await post(a, '/draft', { document: doc, do: 'block', artifact: 'studio', kind: 'studio' })
+  const block = put.body.block
+
+  const room = await post(a, '/canvas', { document: doc, block })
+  assert.ok(room.body.html.includes(`data-node="${block} in"`), 'a block has no In')
+  assert.ok(room.body.html.includes(`data-node="${block} out"`), 'a block has no Out')
+  assert.ok(room.body.nodes === put.body.parts + 2, `${room.body.nodes} nodes for ${put.body.parts} parts and two ends`)
+  assert.ok(room.body.note.includes(`inside ${block}`), room.body.note)
+
+  // The ends are not instances and are drawn as such, because nothing is ever
+  // signed for either of them.
+  assert.ok(room.body.html.includes('k-graph-node-edge'), 'the ends are drawn as ordinary instances')
+
+  // And In carries what the block already takes: seven decisions the recipe
+  // handed back, each an output of In feeding a part.
+  const takes = [...room.body.html.matchAll(new RegExp(`data-out="${block} in ([a-z-]+)"`, 'g'))].map((m) => m[1])
+  assert.ok(takes.length >= 5, `In offers ${takes.length} of the block's ports`)
+  assert.ok(takes.includes('shortlink'), takes.join(', '))
+})
+
+it('a surface is decided by wiring, and the same wire takes it off again', async () => {
+  const a = app()
+  const doc = document({
+    mode: 'plan',
+    instances: WIRING.filter((/** @type {any} */ i) => i.id === 'links-qr'),
+    problems: []
+  })
+  await post(a, '/canvas', { document: doc })
+  const put = await post(a, '/draft', { document: doc, do: 'block', artifact: 'studio', kind: 'studio' })
+  const block = put.body.block
+
+  // `encoder` is a port the recipe filled, so it is not on the surface. Wiring
+  // it to In puts it there: the block stops deciding it and whoever places the
+  // block does instead.
+  const before = await post(a, '/canvas', { document: doc })
+  const surfaceOf = (/** @type {any} */ r) =>
+    [...String(r.body.html).matchAll(new RegExp(`data-port="${block} ([a-z]+)"`, 'g'))].map((m) => m[1])
+  assert.strictEqual(surfaceOf(before).includes('encoder'), false, 'encoder is on the surface already')
+
+  const on = await post(a, '/draft', { document: doc, do: 'expose', block, role: 'main', side: 'in', port: 'encoder' })
+  assert.equal(on.body.ok, true, on.body.why)
+  const after = await post(a, '/canvas', { document: doc })
+  assert.ok(surfaceOf(after).includes('encoder'), `the surface is ${surfaceOf(after).join(', ')}`)
+
+  // Toggled: the same gesture that puts something on a surface takes it off.
+  await post(a, '/draft', { document: doc, do: 'expose', block, role: 'main', side: 'in', port: 'encoder' })
+  const off = await post(a, '/canvas', { document: doc })
+  assert.strictEqual(surfaceOf(off).includes('encoder'), false, 'wiring it again did not take it off')
+
+  // A platform port cannot be a port of anything: the runtime fills it.
+  const runtime = await post(a, '/draft', { document: doc, do: 'expose', block, role: 'main', side: 'in', port: 'listen' })
+  assert.equal(runtime.body.ok, false)
+  assert.ok(runtime.body.why.includes('runtime'), runtime.body.why)
+
+  // Outputs are the other half of the surface, and they toggle the same way.
+  const outs = (/** @type {any} */ r) =>
+    [...String(r.body.html).matchAll(new RegExp(`data-out="${block} ([a-z-]+)"`, 'g'))].map((m) => m[1])
+  const had = outs(await post(a, '/canvas', { document: doc }))
+  assert.ok(had.includes('cli'), `the block answers to ${had.join(', ')}`)
+  await post(a, '/draft', { document: doc, do: 'expose', block, role: 'main', side: 'out', contract: 'cli' })
+  const fewer = outs(await post(a, '/canvas', { document: doc }))
+  assert.strictEqual(fewer.includes('cli'), false, 'an output stayed on the surface after being wired off')
+})
+
 it('a block fills what has one answer and hands back what has a decision', async () => {
   const { needs } = require('../lib/model')
 

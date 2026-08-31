@@ -120,6 +120,34 @@ shortlink beside the one already running would read as tidy and double the estat
 every time it was used. So the same block is several nodes on an empty network
 and one node on a full one, which is the honest answer in both cases.
 
+### Editing one: its own canvas, and two ends
+
+A block opens into **its own canvas** — the same drawing, of a different graph.
+Expanding it where it stood was the first spelling and it answers a different
+question: *what is in there* is worth a glance, and *change what is in there* is
+worth the whole screen. `Whole graph` in the header is the way back, and it is
+only on screen while there is something to come back from.
+
+Inside are the parts, and two nodes that are not instances:
+
+| | |
+| --- | --- |
+| **In** | on the left. Wire a part's port to it and that port becomes a port **of the block**. |
+| **Out** | on the right. Wire a part's output to it and the block answers to that contract. |
+
+That is where a surface is decided, and the reason it is decided *there* is that
+a surface is a wiring decision — so it is made with the wire tool, not in a
+settings panel somewhere else. The same wire takes it off again.
+
+They fall at the edges without being placed there. `lib/layout.js` puts a node to
+the right of everything it depends on: a part that reaches In depends on In, so
+In lands left of every part, and Out consumes the parts so it lands right of
+them. The picture arranges itself out of what the edges already mean.
+
+A block node carries **▣** in its header. Without it a block and an instance are
+the same rectangle until somebody notices the border, and a border is not a thing
+anybody reads a diagram for.
+
 ### One node, until you open it
 
 A shut block draws as a single node carrying only the ports it handed back, with
