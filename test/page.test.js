@@ -799,7 +799,7 @@ it('a block opens into its own canvas, and there is a way back out', async () =>
   seen.fire('window:hashchange')
   await settle()
 
-  const asked = seen.fetches.filter((f) => f.path === '/canvas' && f.sent.block === 'studio')
+  const asked = seen.fetches.filter((f) => f.path === '/canvas' && f.sent.into === 'studio')
   assert.ok(asked.length > 0, 'going into a block drew the whole graph again')
 
   // And out. `Whole graph` is the only way back, because nothing on a block's

@@ -403,7 +403,7 @@ it('a block has its own canvas, with the two ends its surface is decided on', as
   const put = await post(a, '/draft', { document: doc, do: 'block', artifact: 'studio', kind: 'studio' })
   const block = put.body.block
 
-  const room = await post(a, '/canvas', { document: doc, block })
+  const room = await post(a, '/canvas', { document: doc, into: block })
   assert.ok(room.body.html.includes(`data-node="${block}/in"`), 'a block has no In')
   assert.ok(room.body.html.includes(`data-node="${block}/out"`), 'a block has no Out')
   assert.ok(room.body.nodes === put.body.parts + 2, `${room.body.nodes} nodes for ${put.body.parts} parts and two ends`)
@@ -488,7 +488,7 @@ it('every hook the script reaches for is one something actually draws', async ()
   const page = await a.handle({ method: 'GET', path: '/', query: {}, body: JSON.stringify({ document: doc }) })
   const drawn = await post(a, '/canvas', { document: doc, tool: 'place' })
   const inside = await post(a, '/draft', { document: doc, do: 'block', artifact: 'studio', kind: 'studio' })
-  const room = await post(a, '/canvas', { document: doc, block: inside.body.block })
+  const room = await post(a, '/canvas', { document: doc, into: inside.body.block })
   const all = String(page.body) + drawn.body.html + room.body.html
 
   // Minus the ones it makes itself. The live wire is built by the page and hung
@@ -504,6 +504,91 @@ it('every hook the script reaches for is one something actually draws', async ()
   // the edge layer is where a dragged wire is hung, and it carried only a class.
   assert.ok(drawn.body.html.includes('data-graph-edges'),
     'the edge layer has no hook, so a wire cannot be drawn onto it')
+})
+
+it('a placed node goes on the canvas it was placed on', async () => {
+  // It went on the *main* canvas while somebody was inside a block, which is the
+  // canvas lying about what it is a canvas of. The cause was one field doing two
+  // jobs: `block` meant both "the block this names" and "the canvas we are
+  // inside", and placing read it as the first.
+  const a = app()
+  const doc = document({ mode: 'plan' })
+  await post(a, '/canvas', { document: doc })
+  const put = await post(a, '/draft', { document: doc, do: 'block', artifact: 'studio', kind: 'studio' })
+  const block = put.body.block
+
+  const before = (await post(a, '/canvas', { document: doc, into: block })).body.nodes
+  await post(a, '/draft', { document: doc, into: block, do: 'place', artifact: 'shortlink', kind: 'shortlink' })
+
+  const after = (await post(a, '/canvas', { document: doc, into: block })).body.nodes
+  assert.equal(after, before + 1, 'a node placed inside a block did not land in it')
+
+  // And it is not on the outer canvas as a node of its own.
+  const outside = await post(a, '/canvas', { document: doc })
+  assert.strictEqual(outside.body.html.includes('data-node="shortlink"'), false,
+    'the node placed inside a block is drawn on the main canvas too')
+})
+
+it('a placed node comes off again, and a block goes as one', async () => {
+  const a = app()
+  const doc = document({ mode: 'plan' })
+  await post(a, '/canvas', { document: doc })
+
+  const one = await post(a, '/draft', { document: doc, do: 'place', artifact: 'shortlink', kind: 'shortlink' })
+  const id = one.body.drafts[one.body.drafts.length - 1].id
+  const gone = await post(a, '/draft', { document: doc, do: 'drop', id })
+  assert.equal(gone.body.ok, true, gone.body.why)
+  assert.equal(gone.body.drafts.length, 0, 'it is still on the drawing')
+
+  // A whole block goes together: dropping the part that carries the surface and
+  // leaving the rest would leave instances nothing names and nothing can reach.
+  //
+  // On a sparse graph, because against the full fixture a studio block comes to
+  // a single part — and a case that drops a one-part block cannot tell "all of
+  // it" from "the one part of it", which is exactly how the first spelling of
+  // this passed with the rest left behind.
+  const b = app()
+  const sparse = document({
+    mode: 'plan',
+    instances: WIRING.filter((/** @type {any} */ i) => i.id === 'links-qr'),
+    problems: []
+  })
+  await post(b, '/canvas', { document: sparse })
+  const put = await post(b, '/draft', { document: sparse, do: 'block', artifact: 'studio', kind: 'studio' })
+  assert.ok(put.body.parts > 1, `the block is ${put.body.parts} part, so this case cannot tell all of it from one`)
+  const off = await post(b, '/draft', { document: sparse, do: 'drop', id: put.body.block })
+  assert.equal(off.body.ok, true, off.body.why)
+  assert.equal(off.body.drafts.length, 0, `${off.body.drafts.length} parts were left behind`)
+
+  // Nothing may still be bound to what has gone.
+  await post(a, '/draft', { document: doc, do: 'place', artifact: 'shortlink', kind: 'shortlink' })
+  const held = await post(a, '/draft', { document: doc, do: 'block', artifact: 'studio', kind: 'studio' })
+  await post(a, '/draft', { document: doc, do: 'wire', from: held.body.block, port: 'links', to: 'shortlink' })
+  const dropped = await post(a, '/draft', { document: doc, do: 'drop', id: 'shortlink' })
+  assert.ok(dropped.body.commands.every((/** @type {string} */ c) => !/links=\[shortlink\]/.test(c)),
+    `a binding outlived the node it named: ${dropped.body.commands.join(' | ')}`)
+
+  // A signed instance is not something a drawing can take away.
+  const signed = await post(a, '/draft', { document: doc, do: 'drop', id: 'studio' })
+  assert.equal(signed.body.ok, false, 'a signed instance was taken off the drawing')
+  assert.ok(signed.body.why.includes('burns the id'), signed.body.why)
+})
+
+it('an arrangement made by hand is one somebody can unmake', async () => {
+  const kept = memory()
+  const a = app({ store: kept })
+  const doc = document({ mode: 'plan' })
+  await post(a, '/canvas', { document: doc })
+
+  await post(a, '/place', { document: doc, id: 'studio', x: 900, y: 900 })
+  const moved = await post(a, '/canvas', { document: doc })
+  assert.ok(moved.body.html.includes('left:900px'), 'the drag was not kept')
+
+  const back = await post(a, '/places', { document: doc })
+  assert.equal(back.body.ok, true)
+  const laid = await post(a, '/canvas', { document: doc })
+  assert.strictEqual(laid.body.html.includes('left:900px'), false, 'the arrangement survived the reset')
+  assert.strictEqual(await kept.get('places:test'), undefined, 'the reset kept the old places on disk')
 })
 
 it('a block fills what has one answer and hands back what has a decision', async () => {
