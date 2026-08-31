@@ -752,6 +752,27 @@ it('wiring does not pick the node up on the way past', async () => {
   await settle()
   wired = seen.fetches.filter((f) => f.path === '/draft' && f.sent.do === 'wire')
   assert.equal(wired.length, 2, `two presses asked to wire ${wired.length - 1} times`)
+
+  // Dragged off and let go over nothing: the wire comes off. A press and release
+  // that never moved is still the first half of two presses, so the two cannot
+  // be told apart by where they end — only by whether the pointer went anywhere.
+  const empty = seen.nest('[data-graph-world]', ['[data-graph-viewport]'])
+  seen.fire('document:pointerdown', { target: port, clientX: 120, clientY: 140, pointerId: 4 })
+  seen.fire('document:pointermove', { target: port, clientX: 700, clientY: 500 })
+  seen.fire('document:pointerup', { target: empty, clientX: 700, clientY: 500 })
+  await settle()
+
+  const off = seen.fetches.filter((f) => f.path === '/draft' && f.sent.do === 'unwire')
+  assert.equal(off.length, 1, `letting go over nothing asked to unwire ${off.length} times`)
+  assert.equal(off[0].sent.from, 'studio-2')
+  assert.equal(off[0].sent.port, 'links')
+
+  // And a press that never moved keeps it armed rather than taking it off.
+  seen.fire('document:pointerdown', { target: port, clientX: 120, clientY: 140, pointerId: 5 })
+  seen.fire('document:pointerup', { target: port, clientX: 120, clientY: 140 })
+  assert.equal(port.attrs['data-arm'], 'from', 'a press that never moved took the wire off')
+  assert.equal(seen.fetches.filter((f) => f.path === '/draft' && f.sent.do === 'unwire').length, 1,
+    'a press that never moved asked to unwire')
 })
 
 it('a block opens into its own canvas, and there is a way back out', async () => {

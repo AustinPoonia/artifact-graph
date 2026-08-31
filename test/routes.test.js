@@ -470,6 +470,42 @@ it('a surface is decided by wiring, and the same wire takes it off again', async
   assert.strictEqual(fewer.includes('cli'), false, 'an output stayed on the surface after being wired off')
 })
 
+it('every hook the script reaches for is one something actually draws', async () => {
+  // The id version of this lives in `test/screen.test.js` and has caught real
+  // faults. This is the *attribute* version, and it exists because one got past
+  // everything: `livewire()` queried `[data-graph-edges]` and the kit's edge
+  // layer carried only a class, so the wire that follows the pointer never drew
+  // — anywhere, ever. The page test passed because the fake was told that
+  // selector existed, which is the fake agreeing with the bug.
+  const script = fs.readFileSync(require.resolve('../lib/behaviour.js')).toString()
+  const wanted = [...script.matchAll(/\[(data-[a-z-]+)\]/g)].map((m) => m[1])
+  assert.ok(new Set(wanted).size > 8, `only ${new Set(wanted).size} hooks found, so this case checks little`)
+
+  // Everything the page and a drawn canvas hold between them: the canvas markup
+  // is fetched, so half these hooks are never in the document the screen builds.
+  const a = app()
+  const doc = document({ mode: 'plan' })
+  const page = await a.handle({ method: 'GET', path: '/', query: {}, body: JSON.stringify({ document: doc }) })
+  const drawn = await post(a, '/canvas', { document: doc, tool: 'place' })
+  const inside = await post(a, '/draft', { document: doc, do: 'block', artifact: 'studio', kind: 'studio' })
+  const room = await post(a, '/canvas', { document: doc, block: inside.body.block })
+  const all = String(page.body) + drawn.body.html + room.body.html
+
+  // Minus the ones it makes itself. The live wire is built by the page and hung
+  // on the edge layer, so nothing on the server draws one and nothing should.
+  const made = new Set([...script.matchAll(/setAttribute\('(data-[a-z-]+)'/g)].map((m) => m[1]))
+
+  for (const hook of new Set(wanted)) {
+    if (made.has(hook)) continue
+    assert.ok(all.includes(hook), `the script reaches for [${hook}] and nothing draws one`)
+  }
+
+  // And the one this case was written for, named rather than left to the sweep:
+  // the edge layer is where a dragged wire is hung, and it carried only a class.
+  assert.ok(drawn.body.html.includes('data-graph-edges'),
+    'the edge layer has no hook, so a wire cannot be drawn onto it')
+})
+
 it('a block fills what has one answer and hands back what has a decision', async () => {
   const { needs } = require('../lib/model')
 

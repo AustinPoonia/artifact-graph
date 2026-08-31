@@ -1,6 +1,6 @@
 {
   "name": "graph",
-  "version": "1.7.2",
+  "version": "1.8.0",
   "entry": "/index.js",
   "deps": [
     {
@@ -16,7 +16,7 @@
   "kinds": [
     {
       "key": "graph",
-      "version": "1.7.2",
+      "version": "1.8.0",
       "provides": [
         {
           "id": "cli",
