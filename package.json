@@ -1,6 +1,6 @@
 {
   "name": "artifact-graph",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "private": true,
   "description": "The platform's own wiring, drawn \u2014 instances, ports and the splines between them, on a canvas you can focus and cut down",
   "license": "Apache-2.0",

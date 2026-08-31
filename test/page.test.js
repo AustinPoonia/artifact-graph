@@ -184,6 +184,10 @@ function fakeDocument (html, extra = []) {
       else handlers.set(key, [fn])
     },
     createElement: () => build('created'),
+    // The edges layer is SVG, so the page builds its live wire with the
+    // namespaced call — a fake with only `createElement` throws the moment
+    // anybody drags a wire.
+    createElementNS: () => build('created-svg'),
     createRange: () => ({ selectNodeContents () {} }),
     // Through `element`, not `build`, so `seen.at('body')` is the same object the
     // page hung something on. A second one looks identical and has no children.
@@ -691,7 +695,7 @@ it('the drawer and the toolbar are not the canvas', async () => {
 it('wiring does not pick the node up on the way past', async () => {
   // The port is *inside* the node, so a press on it was starting a node drag and
   // the gesture that begins a wire moved the thing the wire comes out of.
-  const seen = run(PLANNING, { hash: '#/', extra: [...DRAWN, '[data-graph-tool]', '[data-answers]'] })
+  const seen = run(PLANNING, { hash: '#/', extra: [...DRAWN, '[data-graph-tool]', '[data-answers]', '[data-graph-edges]'] })
   await settle()
 
   const tool = seen.at('[data-graph-tool]')
@@ -716,8 +720,18 @@ it('wiring does not pick the node up on the way past', async () => {
 
   seen.fire('document:pointerdown', { target: port, clientX: 120, clientY: 140, pointerId: 1 })
   assert.equal(port.attrs['data-arm'], 'from', 'the port was not armed')
+
+  // A wire that comes out of the socket and follows the pointer. Without it an
+  // armed port is a dot that changed colour, and "I can highlight what I want to
+  // wire but no wire comes out" is the whole of what the gesture looked like.
+  const live = seen.at('[data-graph-edges]').children
+    .find((/** @type {any} */ c) => c.attrs['data-graph-live'])
+  if (live === undefined) throw new Error('nothing was drawn out of the armed port')
+  assert.ok(String(live.attrs.class).includes('k-graph-edge-live'), live.attrs.class)
+
   seen.fire('document:pointermove', { target: port, clientX: 400, clientY: 400 })
   assert.equal(node.style.left, was, 'starting a wire dragged the node')
+  assert.ok(String(live.attrs.d).length > 0, 'the wire does not follow the pointer')
 
   seen.fire('document:pointerup', { target: answers, clientX: 400, clientY: 400 })
   await settle()
