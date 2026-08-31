@@ -117,8 +117,14 @@ function fakeDocument (html, extra = []) {
       ancestors: /** @type {any[]} */ ([]),
       closest: (/** @type {string} */ q) => {
         const want = q.replace(/\[|\]/g, '')
-        if (what.includes(want)) return el
-        for (const up of el.ancestors) if (String(up.what).includes(want)) return up
+        // An attribute a case *set* counts as much as one in the selector the
+        // element was built from. Without this an element is only ever what it
+        // was named, so a second node in a case could never be a `[data-node]`
+        // — and the case that needed one silently measured nothing.
+        const is = (/** @type {any} */ one) =>
+          String(one.what).includes(want) || Object.prototype.hasOwnProperty.call(one.attrs, want)
+        if (is(el)) return el
+        for (const up of el.ancestors) if (is(up)) return up
         return null
       },
       focus () {},
@@ -685,7 +691,7 @@ it('the drawer and the toolbar are not the canvas', async () => {
 it('wiring does not pick the node up on the way past', async () => {
   // The port is *inside* the node, so a press on it was starting a node drag and
   // the gesture that begins a wire moved the thing the wire comes out of.
-  const seen = run(PLANNING, { hash: '#/', extra: [...DRAWN, '[data-graph-tool]'] })
+  const seen = run(PLANNING, { hash: '#/', extra: [...DRAWN, '[data-graph-tool]', '[data-answers]'] })
   await settle()
 
   const tool = seen.at('[data-graph-tool]')
@@ -701,20 +707,37 @@ it('wiring does not pick the node up on the way past', async () => {
   port.setAttribute('data-port', 'studio-2 links')
   const was = node.style.left
 
+  // A **drag**, which is the gesture everybody tries first — and which did
+  // nothing at all when this was driven by clicks: a drag from a port to a node
+  // fires its click on the nearest common ancestor, so a click handler never
+  // sees the port the drag started from.
+  const answers = seen.nest('[data-answers]', ['[data-graph-viewport]'])
+  answers.setAttribute('data-node', 'links-qr')
+
   seen.fire('document:pointerdown', { target: port, clientX: 120, clientY: 140, pointerId: 1 })
+  assert.equal(port.attrs['data-arm'], 'from', 'the port was not armed')
   seen.fire('document:pointermove', { target: port, clientX: 400, clientY: 400 })
   assert.equal(node.style.left, was, 'starting a wire dragged the node')
 
-  // Two clicks: the port, then the node that answers it.
-  seen.fire('document:click', { target: port })
-  assert.equal(port.attrs['data-arm'], 'from', 'the port was not armed')
-
-  seen.fire('document:click', { target: node })
+  seen.fire('document:pointerup', { target: answers, clientX: 400, clientY: 400 })
   await settle()
-  const wired = seen.fetches.filter((f) => f.path === '/draft' && f.sent.do === 'wire')
-  assert.equal(wired.length, 1, `the second click asked to wire ${wired.length} times`)
+  let wired = seen.fetches.filter((f) => f.path === '/draft' && f.sent.do === 'wire')
+  assert.equal(wired.length, 1, `the drag asked to wire ${wired.length} times`)
   assert.equal(wired[0].sent.from, 'studio-2')
   assert.equal(wired[0].sent.port, 'links')
+  assert.equal(wired[0].sent.to, 'links-qr')
+
+  // And two presses, which is the same path: released on the node it started
+  // from, a wire stays armed for the next one.
+  seen.fire('document:pointerdown', { target: port, clientX: 120, clientY: 140, pointerId: 2 })
+  seen.fire('document:pointerup', { target: port, clientX: 120, clientY: 140 })
+  assert.equal(port.attrs['data-arm'], 'from', 'a press and release on the port let go of it')
+
+  seen.fire('document:pointerdown', { target: answers, clientX: 400, clientY: 400, pointerId: 3 })
+  seen.fire('document:pointerup', { target: answers, clientX: 400, clientY: 400 })
+  await settle()
+  wired = seen.fetches.filter((f) => f.path === '/draft' && f.sent.do === 'wire')
+  assert.equal(wired.length, 2, `two presses asked to wire ${wired.length - 1} times`)
 })
 
 it('a block opens into its own canvas, and there is a way back out', async () => {

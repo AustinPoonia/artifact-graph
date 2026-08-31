@@ -230,10 +230,11 @@ from the drawing is the one that cannot offer it. Pick a kind, click the canvas,
 and a node lands where the pointer was. It is drawn dashed, because it is a
 proposal and every other node is a thing that exists.
 
-**Wire** is two clicks rather than a drag: a port, then the node that answers it.
-A drag over a canvas that also pans is two gestures fighting over one pointer,
-and two clicks is what a keyboard can do as well. A wire only lands where the
-contract fits — `lib/routes.js` checks that the target's `provides` holds what
+**Wire** is a drag, and two presses are the same gesture: arm on the way down,
+land on the way up. It cannot be done on `click` — a drag from a port to a node
+fires its click on the nearest *common ancestor*, so a click handler never sees
+the port the drag started from, which is why the obvious gesture did nothing at
+all for a while. A wire only lands where the contract fits — `lib/routes.js` checks that the target's `provides` holds what
 the port wants, so a node editor whose drawings do not plan is not possible here.
 
 **A signed instance cannot be dragged into a new shape.** Wiring one is refused
