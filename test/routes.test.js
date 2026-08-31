@@ -404,10 +404,16 @@ it('a block has its own canvas, with the two ends its surface is decided on', as
   const block = put.body.block
 
   const room = await post(a, '/canvas', { document: doc, block })
-  assert.ok(room.body.html.includes(`data-node="${block} in"`), 'a block has no In')
-  assert.ok(room.body.html.includes(`data-node="${block} out"`), 'a block has no Out')
+  assert.ok(room.body.html.includes(`data-node="${block}/in"`), 'a block has no In')
+  assert.ok(room.body.html.includes(`data-node="${block}/out"`), 'a block has no Out')
   assert.ok(room.body.nodes === put.body.parts + 2, `${room.body.nodes} nodes for ${put.body.parts} parts and two ends`)
   assert.ok(room.body.note.includes(`inside ${block}`), room.body.note)
+
+  // An id with no space in it, because `data-port` and `data-out` carry an id
+  // and a name separated by one: `studio in shortlink` read as the instance
+  // `studio` and the port `in`, and the page wired the wrong thing quietly.
+  assert.strictEqual(/data-(port|out)="[^"]* in [^"]*"/.test(room.body.html), false,
+    'a boundary id has a space in it, so the page cannot tell where the id ends')
 
   // The ends are not instances and are drawn as such, because nothing is ever
   // signed for either of them.
@@ -415,7 +421,7 @@ it('a block has its own canvas, with the two ends its surface is decided on', as
 
   // And In carries what the block already takes: seven decisions the recipe
   // handed back, each an output of In feeding a part.
-  const takes = [...room.body.html.matchAll(new RegExp(`data-out="${block} in ([a-z-]+)"`, 'g'))].map((m) => m[1])
+  const takes = [...room.body.html.matchAll(new RegExp(`data-out="${block}/in ([a-z-]+)"`, 'g'))].map((m) => m[1])
   assert.ok(takes.length >= 5, `In offers ${takes.length} of the block's ports`)
   assert.ok(takes.includes('shortlink'), takes.join(', '))
 })

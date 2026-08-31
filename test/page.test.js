@@ -43,7 +43,7 @@ function fakeDocument (html, extra = []) {
   }
 
   /** @type {{ calls: string[], fetches: { path: string, sent: any }[], fire?: any, at?: any, where?: any,
-   *   copied?: string[], selected?: number, nest?: any }} */
+   *   copied?: string[], selected?: number, nest?: any, listen?: any }} */
   const seen = { calls: [], fetches: [] }
   /** @type {Map<string, Function[]>} */
   const handlers = new Map()
@@ -184,6 +184,17 @@ function fakeDocument (html, extra = []) {
     get body () { return element('body') }
   }
 
+  // Exposed so the *window*'s listeners land in the same map as the document's:
+  // its `addEventListener` was `() => {}`, so the router's own `hashchange`
+  // listener went nowhere and no case could drive the page the way the address
+  // bar drives it.
+  seen.listen = (/** @type {string} */ key, /** @type {Function} */ fn) => {
+    seen.calls.push(key)
+    const held = handlers.get(key)
+    if (held) held.push(fn)
+    else handlers.set(key, [fn])
+  }
+
   seen.at = (/** @type {string} */ selector) => element(selector)
   /** Put one element inside others, outermost last. */
   seen.nest = (/** @type {string} */ selector, /** @type {string[]} */ within) => {
@@ -233,7 +244,13 @@ function run (html, { hash = '', extra = [], answer = {}, clipboard = true } = {
   seen.where = where
   const window = {
     location: where,
-    addEventListener: () => {},
+    // Recorded, not swallowed. This was `() => {}`, so the router's own
+    // `hashchange` listener went nowhere and no case could drive the page the
+    // way the address bar drives it — every navigation was checked by asserting
+    // on the address and hoping.
+    addEventListener (/** @type {string} */ event, /** @type {Function} */ fn) {
+      seen.listen('window:' + event, fn)
+    },
     setTimeout: (/** @type {() => void} */ fn) => { fn(); return 0 },
     clearTimeout: () => {},
     getSelection: () => ({ removeAllRanges () {}, addRange () { seen.selected = (seen.selected || 0) + 1 } })
@@ -698,6 +715,39 @@ it('wiring does not pick the node up on the way past', async () => {
   assert.equal(wired.length, 1, `the second click asked to wire ${wired.length} times`)
   assert.equal(wired[0].sent.from, 'studio-2')
   assert.equal(wired[0].sent.port, 'links')
+})
+
+it('a block opens into its own canvas, and there is a way back out', async () => {
+  const seen = run(PLANNING, { hash: '#/', extra: [...DRAWN, '[data-graph-into]'] })
+  await settle()
+
+  const into = seen.nest('[data-graph-into]', ['[data-node]', '[data-graph-viewport]'])
+  into.setAttribute('data-graph-into', 'studio')
+  into.setAttribute('aria-expanded', 'false')
+
+  // Pressing it must not start a drag: it lives in a node's header, and the
+  // header is the thing a drag picks up.
+  const node = seen.at('[data-node]')
+  const was = node.style.left
+  seen.fire('document:pointerdown', { target: into, clientX: 40, clientY: 40, pointerId: 1 })
+  seen.fire('document:pointermove', { target: into, clientX: 400, clientY: 400 })
+  assert.equal(node.style.left, was, 'opening a block dragged the node it is on')
+
+  seen.fire('document:click', { target: into })
+  assert.equal(seen.where.hash, '#/block/studio', `it went to ${seen.where.hash}`)
+
+  // The fake fires no hashchange, so the router is driven the way the address
+  // bar would drive it.
+  seen.fire('window:hashchange')
+  await settle()
+
+  const asked = seen.fetches.filter((f) => f.path === '/canvas' && f.sent.block === 'studio')
+  assert.ok(asked.length > 0, 'going into a block drew the whole graph again')
+
+  // And out. `Whole graph` is the only way back, because nothing on a block's
+  // own canvas leads out of it.
+  seen.fire('document:click', { target: seen.at('#do-out') })
+  assert.equal(seen.where.hash, '#/canvas', `it came back to ${seen.where.hash}`)
 })
 
 it('a step moves the field it names and redraws', async () => {
